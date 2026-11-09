@@ -1,10 +1,10 @@
 ## Interface: 16001
 ## Title: Herdr
 ## Notes: Browse Herdr spaces and agent tabs from inside World of Warcraft. Needs the herdr-wow bridge running on this computer.
-## Author: Ryan Hughes
+## Author: Cody Bontecou, Ryan Hughes
 ## Version: 0.1.0
 ## X-License: MIT
-## X-Website: https://github.com/CodyBontecou/t3code-wow
+## X-Website: https://github.com/CodyBontecou/herdr-wow
 ## IconTexture: Interface\AddOns\T3Code\Media\icon
 ## SavedVariables: T3CodeDB
 ## AddonCompartmentFunc: T3Code_OnAddonCompartmentClick

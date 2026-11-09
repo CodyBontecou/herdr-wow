@@ -10,7 +10,7 @@
 # for new installs; the optional T3 backend creates its scoped session when selected.
 set -euo pipefail
 
-repo="${HERDR_WOW_REPO:-CodyBontecou/t3code-wow}"
+repo="${HERDR_WOW_REPO:-CodyBontecou/herdr-wow}"
 ref="${HERDR_WOW_REF:-${T3CODE_WOW_REF:-main}}"
 dest="${XDG_DATA_HOME:-$HOME/.local/share}/t3code-wow"
 bin="$HOME/.local/bin"

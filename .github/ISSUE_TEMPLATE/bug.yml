@@ -5,14 +5,14 @@ body:
   - type: markdown
     attributes:
       value: |
-        This is an early, experimental release built for Omarchy 4.5.0, T3 Code Nightly and WoW: Forever. Detailed but straightforward reports help most: what happened, plainly, without an essay.
+        Herdr WoW is experimental, with a Herdr backend, native macOS support and an optional Linux/T3 Code backend for WoW: Forever. Detailed but straightforward reports help most: what happened, plainly, without an essay.
 
   - type: input
     id: versions
     attributes:
       label: Versions
-      description: Omarchy (`omarchy-version`), T3 Code Nightly (`t3 --version`), t3code-wow (`t3code-wow status`), and your controller if it's involved.
-      placeholder: e.g. Omarchy 4.5.0, t3 v0.1.7-nightly.20261102, t3code-wow 0.1.0, Xbox Series controller
+      description: OS, Herdr (`herdr --version`), bridge (`herdr-wow status`), WoW Forever, and your controller if involved. Include T3 Code and Omarchy versions when using that backend.
+      placeholder: e.g. macOS 15, Herdr 0.8.0, herdr-wow 0.1.0, Forever 1.60.x
     validations:
       required: true
 
@@ -28,7 +28,7 @@ body:
     id: diagnostics
     attributes:
       label: Diagnostics
-      description: Output of `t3code-wow status --log`, and the text from `/t3 report` in game.
+      description: Output of `herdr-wow status --log`, and the text from `/herdr report` in game. Remove private information before sharing.
       render: text
 
   - type: textarea

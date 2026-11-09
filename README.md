@@ -1,19 +1,44 @@
-# Herdr for World of Warcraft
+# Herdr WoW
 
-An unofficial [Herdr](https://herdr.dev) interface inside World of Warcraft: Forever. Browse your spaces and tabs, read agent output, reply to idle agents, and start Pi sessions without leaving the game.
+[Herdr](https://herdr.dev) spaces, agent tabs and conversations inside **World of Warcraft: Forever**.
+
+[Setup & limitations](docs/HERDR.md) · [Architecture](docs/ARCHITECTURE.md) · [Contributing](CONTRIBUTING.md) · [Report a bug](https://github.com/CodyBontecou/herdr-wow/issues)
+
+Browse your spaces and tabs, read agent conversations, reply to idle agents, and start Pi sessions without leaving the game.
 
 **Experimental.** This fork adds native macOS capture and Herdr support to [Ryan Hughes's T3 Code addon](https://github.com/ryanrhughes/t3code-wow). The original Linux/T3 backend remains available. Native macOS transport has been exercised in game, but not every client version, sound setting, display setup or controller combination has been verified.
 
 ## What works
 
-- **Spaces and tabs:** `/herdr` opens all spaces in the selected Herdr session. Filter by space, select a tab, or inspect individual panes in split tabs. Empty spaces remain visible.
-- **Agent replies:** read terminal output and send prompts to idle Pi, Codex and Claude Code sessions. Shell tabs and other agent kinds are read-only.
+- **Your desktop organization, in game:** browse every space and tab in one selected Herdr session, in desktop order. Activity changes no longer shuffle tabs. Filter by space or inspect numbered pane rows in split tabs; empty spaces remain visible.
+- **Pi conversation cards:** read the last saved conversation branch as replies, thinking, syntax-colored code, diffs and tool cards with expandable output and a bundled monospaced font. Other agents and unavailable Pi histories fall back to terminal output.
+- **Agent replies and questions:** send prompts to idle Pi, Codex and Claude Code sessions. Recognized Codex and Claude Code questions support terminal navigation, single-line text entry and explicit submission. Shell tabs and other agent kinds are read-only.
 - **New Pi sessions:** choose New Thread, select an allowlisted project, and start Pi in a background Herdr tab. The same session remains accessible on your desktop.
 - **Tracker and notifications:** see work in progress and completion notices. Click a popup's × to dismiss it. `/herdr notifications off` disables automatic popups, sounds, chat notices and read-aloud; `on` enables them again. Individual preferences are in Settings.
 - **Controller navigation:** hold both triggers and press Back/View to open the window. The window captures controller input only while open and releases it before combat lockdown.
 - **Optional voice:** manual and automatic read-aloud use available game voices or a configured desktop speech backend. Dictation still needs a supported desktop backend.
 
-Herdr transcripts currently contain terminal output, not full structured chat history. Empty viewport padding and a recognized Pi usage footer are removed. Recognized Codex and Claude Code questions have in-game terminal navigation, text-entry and submit controls. Unrecognized layouts, approvals, stop, busy follow-ups/steering, screenshots and archiving still require the desktop. See [the setup and limitations guide](docs/HERDR.md).
+Pi cards read saved history, not live streaming output: in-progress replies appear after Pi saves them. Terminal fallback removes empty viewport padding and a recognized Pi usage footer without removing code indentation. Unrecognized question layouts, approvals, stop, busy follow-ups/steering, screenshots and archiving still require the desktop. See [the setup and limitations guide](docs/HERDR.md).
+
+## What changed from upstream
+
+Herdr WoW is based on [Ryan Hughes's `t3code-wow`](https://github.com/ryanrhughes/t3code-wow). The upstream addon connects WoW to T3 Code on Linux; this fork adds a Herdr-first workflow while keeping the original backend available.
+
+| Area | Changes in this fork |
+| --- | --- |
+| Backend | Herdr session discovery and agent controls, no T3 installation required. Fresh installs default to Herdr; existing backend choices are preserved. |
+| Desktop organization | All spaces and tabs, empty spaces, numbered split panes and lists beyond the original 90-thread limit. Desktop moves, renames, reordering and closures reconcile on refresh. Activity never changes tab order. |
+| Conversations | Pi saved-branch cards for user/assistant text, thinking, code and tools; syntax colors, diff colors, bounded expandable output and JetBrains Mono. Other sessions retain a labeled terminal view. |
+| New sessions | Launch Pi in an unfocused tab through allowlisted project directories. The task form submits an initial prompt; the new-tab shortcut opens a fresh session ready for input. Failed launches retain their tab for inspection. |
+| Keyboard navigation | Preview/import supported Herdr tab and workspace shortcuts, review conflicts in game, and undo the last import. Space cycling follows dropdown order. New-tab launches use a configured project in the selected space or open the task form. |
+| Tab closing | Close the actual Herdr tab from its shortcut, with live identity checks. **This immediately terminates all panes and processes in that tab, without confirmation.** |
+| Terminal questions | Guarded controls for narrowly recognized Codex and Claude Code question screens. Single-use screen IDs and session checks reject stale answers; text entry does not append Enter. Unknown layouts and approvals remain desktop-only. |
+| Native macOS | Forever discovery, process-start identity checks and a ScreenCaptureKit helper for pixel-strip capture and screenshots. Linux capture and the optional T3 backend remain available. |
+| Notifications | Dismiss individual popups and mute all automatic popups, sounds, chat notices and read-aloud from Settings or `/herdr notifications off`. Manual speech remains available. |
+| Branding | Herdr window title, icons, minimap art, game-menu entry, settings, bindings, `/herdr` commands and `herdr-wow` CLI. Legacy aliases and saved data remain compatible. |
+| Safety and verification | Separate browse permissions from launch allowlists; shell tabs stay read-only. Session identity checks, serial commands, guarded question input, Pi-session path validation, bridge regression tests and expanded Lua smoke coverage. |
+
+The encrypted pixel strip, load-on-demand slots, bell protocol, pacing and controller/combat boundaries come from upstream and remain intact. This is still experimental: native macOS transport has worked in game, but full visual/controller verification and broader client/display/sound coverage remain incomplete. The [Herdr guide](docs/HERDR.md) records feature boundaries and verification gaps.
 
 ## Requirements
 
@@ -30,6 +55,8 @@ T3 Code is **not required** for Herdr. To use the optional original backend inst
 ## Install from this checkout
 
 ```bash
+git clone https://github.com/CodyBontecou/herdr-wow.git
+cd herdr-wow
 ./install.sh --backend herdr --no-service
 ~/.local/bin/herdr-wow run
 ```
@@ -61,6 +88,15 @@ Restart the bridge after changing its configuration. The directory and workspace
 - `/herdr errors`: inspect recorded addon errors.
 
 Keyboard shortcuts can be assigned in **Options → Keybindings → Herdr**. Existing keyboard bindings are preserved. The legacy `/t3` and `/t3code` commands still work.
+
+## Import Herdr keyboard shortcuts
+
+```bash
+herdr-wow keybinds import          # preview supported shortcuts; no changes
+herdr-wow keybinds import --apply  # stage the import for WoW
+```
+
+Then `/reload` and run `/herdr importkeys` to review conflicts and confirm. `/herdr undokeys` restores bindings changed by the last import when safe. Two-step prefix sequences need an explicit modifier translation; Cmd/Super chords and unsupported actions are skipped. See [shortcut import details](docs/HERDR.md#import-terminal-shortcuts).
 
 ## Bridge commands
 

@@ -2,14 +2,14 @@
   "name": "herdr-wow",
   "version": "0.1.0",
   "description": "Herdr's spaces and agent tabs inside World of Warcraft: Forever. Experimental bridge with an optional T3 Code backend.",
-  "homepage": "https://github.com/CodyBontecou/t3code-wow",
+  "homepage": "https://github.com/CodyBontecou/herdr-wow",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/CodyBontecou/t3code-wow.git",
+    "url": "git+https://github.com/CodyBontecou/herdr-wow.git",
     "directory": "bridge"
   },
   "bugs": {
-    "url": "https://github.com/CodyBontecou/t3code-wow/issues"
+    "url": "https://github.com/CodyBontecou/herdr-wow/issues"
   },
   "author": "Ryan Hughes",
   "type": "module",

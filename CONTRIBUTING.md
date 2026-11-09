@@ -29,8 +29,8 @@ One problem per issue. If you're not sure it's a bug, say so and describe what y
 ## Development
 
 ```bash
-git clone https://github.com/CodyBontecou/t3code-wow
-cd t3code-wow
+git clone https://github.com/CodyBontecou/herdr-wow
+cd herdr-wow
 ./install.sh --backend herdr --no-service  # installs this checkout; run herdr-wow run afterward
 ```
 
@@ -56,4 +56,4 @@ Before changing how the addon and bridge talk, read [docs/ARCHITECTURE.md](docs/
 
 ## Security
 
-If you find a security problem, such as a way to send commands to someone's agents or read what they're sending, please report it privately through [GitHub's security advisories](https://github.com/ryanrhughes/t3code-wow/security/advisories/new) rather than a public issue.
+If you find a security problem, such as a way to send commands to someone's agents or read what they're sending, please report it privately through [GitHub's security advisories](https://github.com/CodyBontecou/herdr-wow/security/advisories/new) rather than a public issue.
