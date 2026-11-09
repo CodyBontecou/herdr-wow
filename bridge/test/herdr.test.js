@@ -316,6 +316,38 @@ test('WoW snapshots keep empty spaces and more than 90 tabs, without mixing brow
   assert.equal(snapshot.projects.find((p) => p.id === 'demo').filterId, 'space:w1');
 });
 
+test('addon order follows Herdr spaces and tabs across activity changes and desktop reordering', async (t) => {
+  const f = fixture(t);
+  const first = f.agent({ terminal_id: 'first', tab_id: 'w1:t1', pane_id: 'w1:p1' });
+  const second = f.agent({ terminal_id: 'second', tab_id: 'w1:t2', pane_id: 'w1:p2', agent_status: 'working' });
+  const third = f.agent({ terminal_id: 'third', workspace_id: 'w2', tab_id: 'w2:t1', pane_id: 'w2:p1' });
+  const topology = {
+    workspaces: [{ workspace_id: 'w1', label: 'Zebra' }, { workspace_id: 'w2', label: 'Alpha' }],
+    tabs: [first, second, third].map((a) => ({ tab_id: a.tab_id, workspace_id: a.workspace_id, label: a.terminal_id })),
+    panes: [third, second, first],
+    agents: [first, second, third],
+  };
+  f.setTopology(topology);
+  await f.backend.refresh();
+  const b = new Bridge({ addonsDir: path.join(f.root, 'addons'), config: { backend: 'herdr', herdr: f.config }, stateDir: path.join(f.root, 'state'), log: () => {} });
+  b.t3 = f.backend;
+  t.after(() => { b.stop(); clearTimeout(b.saveTimer); });
+  const check = (names, spaces) => {
+    const snapshot = b.buildSnapshot();
+    assert.deepEqual(snapshot.threads.map((row) => row.title.split(' · ')[0]), names);
+    assert.deepEqual(snapshot.projects.filter((p) => p.browse).map((p) => p.name), spaces);
+  };
+  check(['first', 'second', 'third'], ['Zebra', 'Alpha']);
+  first.agent_status = 'working';
+  second.agent_status = 'idle';
+  await f.backend.refresh();
+  check(['first', 'second', 'third'], ['Zebra', 'Alpha']);
+  topology.workspaces.reverse();
+  topology.tabs = [topology.tabs[2], topology.tabs[1], topology.tabs[0]];
+  await f.backend.refresh();
+  check(['third', 'second', 'first'], ['Alpha', 'Zebra']);
+});
+
 test('a working chat can be read without asking Herdr to scroll its alternate-screen history', async (t) => {
   const f = fixture(t);
   f.setAgents([f.agent({ agent_status: 'working' })]);

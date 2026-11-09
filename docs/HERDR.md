@@ -43,7 +43,7 @@ Named Herdr sessions can be selected with `--session NAME` when configuring proj
 
 One Herdr topology snapshot supplies spaces, tabs, panes and agent metadata every two seconds. Each space is a browse filter; each tab appears as a row with its tab label and agent kind. Split tabs have one numbered row per pane, so no pane is silently hidden. Terminal output is read only for the selected tab. Discovery does not focus tabs, start agents or add launch permissions.
 
-Ordinary terminals and unsupported agent kinds are read-only, enforced in both the addon and bridge. Idle Pi, Codex and Claude Code sessions accept literal prompts through Herdr's agent interface; shell input is never sent. Empty spaces stay in the filter. Renamed, moved and closed tabs/spaces are reconciled at the next snapshot. The original T3 thread-count limit does not truncate Herdr's tab list.
+Ordinary terminals and unsupported agent kinds are read-only, enforced in both the addon and bridge. Idle Pi, Codex and Claude Code sessions accept literal prompts through Herdr's agent interface; shell input is never sent. Empty spaces stay in the filter. Spaces and tabs follow their desktop Herdr order, with split-pane rows kept together; activity changes do not move tabs. Renamed, reordered, moved and closed tabs/spaces are reconciled at the next snapshot. The original T3 thread-count limit does not truncate Herdr's tab list.
 
 Launch projects are listed separately in the New Thread dropdown. Browse-only spaces never become launch destinations automatically, and changing the space filter does not authorize a new directory. An old configured-project filter is migrated to its matching space filter.
 

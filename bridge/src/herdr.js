@@ -205,7 +205,12 @@ export class HerdrBackend extends EventEmitter {
       for (const pane of snapshot.panes) paneCounts.set(pane.tab_id, (paneCounts.get(pane.tab_id) || 0) + 1);
       const paneNumbers = new Map();
       const seen = new Set();
-      for (const pane of snapshot.panes) {
+      const beforeOrder = [...this.threads.keys()];
+      // Topology arrays follow desktop order; pane discovery and Map insertion do not.
+      const orderedPanes = snapshot.workspaces.flatMap((workspace) => snapshot.tabs
+        .filter((tab) => tab.workspace_id === workspace.workspace_id)
+        .flatMap((tab) => snapshot.panes.filter((pane) => pane.tab_id === tab.tab_id)));
+      for (const pane of orderedPanes) {
         const agent = agents.get(pane.pane_id);
         const entry = { ...pane, ...agent, agent: agent?.agent || null, agent_session: agent?.agent_session };
         const project = this.projectFor(entry);
@@ -221,6 +226,8 @@ export class HerdrBackend extends EventEmitter {
         this.questions.delete(id);
         this.emit('change', { kind: 'removed', id });
       }
+      this.threads = new Map([...seen].map((id) => [id, this.threads.get(id)]));
+      if (JSON.stringify(beforeOrder) !== JSON.stringify([...seen])) this.emit('change', { kind: 'snapshot' });
       if (beforeProjects !== JSON.stringify([...this.projects.values()])) this.emit('change', { kind: 'project' });
       this.setState('connected');
     }).catch((err) => { this.setState('offline', err.message); }).finally(() => { this.refreshing = null; });

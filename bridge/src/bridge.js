@@ -737,7 +737,9 @@ export class Bridge {
     let threads = [...t3.threads.values()]
       .map((t) => ({ t, s: threadStatus(t) }))
       .filter(({ s }) => s !== 'archived');
-    threads.sort((a, b) => ORDER[a.s] - ORDER[b.s] || Date.parse(b.t.updatedAt) - Date.parse(a.t.updatedAt));
+    if (this.config.backend !== 'herdr') {
+      threads.sort((a, b) => ORDER[a.s] - ORDER[b.s] || Date.parse(b.t.updatedAt) - Date.parse(a.t.updatedAt));
+    }
     let settled = 0;
     threads = threads.filter(({ s }) => s !== 'settled' || ++settled <= 30);
     if (!t3.showAllTabs) threads = threads.slice(0, 90);
@@ -788,7 +790,9 @@ export class Bridge {
         act: usedProjects.has(p.id) || p.browse || undefined,
       });
     }
-    projects.sort((a, b) => (b.act ? 1 : 0) - (a.act ? 1 : 0) || a.name.localeCompare(b.name));
+    if (this.config.backend !== 'herdr') {
+      projects.sort((a, b) => (b.act ? 1 : 0) - (a.act ? 1 : 0) || a.name.localeCompare(b.name));
+    }
 
     let view;
     const viewId = this.client?.view;
