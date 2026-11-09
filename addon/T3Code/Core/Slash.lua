@@ -4,6 +4,8 @@ local _, ns = ...
 
 BINDING_HEADER_T3CODE = ns.title
 BINDING_NAME_T3CODE_TOGGLE = "Open or close Herdr"
+BINDING_NAME_T3CODE_FULLSCREEN = "Toggle Herdr fullscreen"
+BINDING_NAME_T3CODE_FOCUS_INPUT = "Focus message input"
 BINDING_NAME_T3CODE_NEW = "Start a new thread"
 BINDING_NAME_T3CODE_NEXT_WORKSPACE = "Next workspace (space filter)"
 BINDING_NAME_T3CODE_PREVIOUS_WORKSPACE = "Previous workspace (space filter)"
@@ -17,8 +19,14 @@ BINDING_NAME_T3CODE_HUSH = "Stop reading aloud"
 function T3Code_Binding(action, keystate)
 	if action == "toggle" then
 		ns.Launcher:Open()
+	elseif action == "fullscreen" then
+		ns.db.settings.fullscreen = not ns.db.settings.fullscreen
+		ns.Main:ApplyScale()
+		ns.Settings:Refresh()
+	elseif action == "focusInput" then
+		ns.Main:FocusInput()
 	elseif action == "new" then
-		ns.Main:StartNewThread()
+		ns.Main:StartNewTab()
 	elseif action == "nextWorkspace" then
 		ns.ThreadList:NavigateWorkspace(1)
 	elseif action == "previousWorkspace" then

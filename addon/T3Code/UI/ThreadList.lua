@@ -147,9 +147,20 @@ function L:SelectSpace(id)
 	ns.db.settings.project = id
 	self.tabOffset = 0
 	local t = ns.Store:Thread(ns.viewId)
-	if not t or (id ~= "all" and t.p ~= id) then
+	local herdr = ns.Store.data.bridge.backend == "Herdr"
+	if herdr or not t or (id ~= "all" and t.p ~= id) then
 		local groups = ns.Store:Groups(id, self.query)
 		local first = groups.working[1] or groups.open[1] or groups.settled[1]
+		if herdr then
+			-- Match the tab bar's desktop order, not activity-group order.
+			local included = {}
+			for _, group in ipairs(GROUPS) do
+				for _, row in ipairs(groups[group.key]) do included[row.id] = true end
+			end
+			for _, row in ipairs(ns.Store.data.threads) do
+				if included[row.id] then first = row break end
+			end
+		end
 		ns.Main:SelectThread(first and first.id or nil)
 	end
 	self:Refresh(true)
@@ -225,6 +236,18 @@ function L:CreateTabs(parent)
 		bar.buttons[i] = button
 	end
 	self.tabs = bar
+	bar:SetScript("OnSizeChanged", function() L:LayoutTabs() end)
+end
+
+function L:LayoutTabs()
+	local bar = self.tabs
+	if not bar then return end
+	local width = math.max(0, (bar:GetWidth() - 72) / 3)
+	for i, button in ipairs(bar.buttons) do
+		button:SetWidth(width)
+		button:ClearAllPoints()
+		button:SetPoint("LEFT", bar, "LEFT", 32 + (i - 1) * (width + 4), 0)
+	end
 end
 
 function L:RefreshTabs()
@@ -258,14 +281,11 @@ function L:RefreshTabs()
 		self.tabView = ns.viewId
 	end
 	self.tabOffset = offset
-	local width = math.max(80, (bar:GetWidth() - 72) / 3)
+	self:LayoutTabs()
 	for i, button in ipairs(bar.buttons) do
 		local t = rows[offset + i]
 		button.thread = t
 		button:SetShown(t ~= nil)
-		button:SetWidth(width)
-		button:ClearAllPoints()
-		button:SetPoint("LEFT", bar, "LEFT", 32 + (i - 1) * (width + 4), 0)
 		local active = t and t.id == ns.viewId and ns.Main.mode == "thread"
 		button.Background:SetColorTexture(active and 0.18 or 0.08, active and 0.25 or 0.09, active and 0.38 or 0.12, 0.95)
 		button.ActiveLine:SetShown(active)
@@ -376,7 +396,7 @@ function L:Navigate(direction)
 end
 
 -- Cycle real browse filters, not launch aliases or aggregate/machine entries.
--- Keep the conversation/draft intact, just like choosing a space in the dropdown.
+-- Herdr selects the destination's first tab; T3 keeps its project-filter behavior.
 function L:NavigateWorkspace(direction)
 	ns.Main:Create()
 	self:Refresh()
@@ -391,9 +411,13 @@ function L:NavigateWorkspace(direction)
 	local nextIndex
 	if current then nextIndex = (current - 1 + direction) % #spaces + 1
 	else nextIndex = direction > 0 and 1 or #spaces end
-	ns.db.settings.project = spaces[nextIndex]
-	self.tabOffset = 0
-	self:Refresh(true)
+	if ns.Store.data.bridge.backend == "Herdr" then
+		self:SelectSpace(spaces[nextIndex])
+	else
+		ns.db.settings.project = spaces[nextIndex]
+		self.tabOffset = 0
+		self:Refresh(true)
+	end
 	ns.Main:Open()
 	ns.Main:ShowPage("threads")
 	ns.Main:Refresh()

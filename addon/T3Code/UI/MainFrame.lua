@@ -116,6 +116,7 @@ function M:Create()
 		ns.Transport:Touch()
 		M:Refresh()
 		ns:Fire("WindowShown", f)
+		if M.page == "threads" then M.composer:SetFocus() end
 	end))
 	f:SetScript("OnHide", ns.Safe(function()
 		PlaySound(SOUNDKIT.IG_CHARACTER_INFO_CLOSE)
@@ -294,6 +295,7 @@ function M:ShowPage(page)
 	if page == "settings" then ns.Settings:Refresh() end
 	self:Refresh()
 	ns:Fire("PageChanged", page)
+	if threads and f:IsShown() then self.composer:SetFocus() end
 end
 
 function M:ToggleSidebar(show)
@@ -358,22 +360,6 @@ function M:SelectThread(id, opts)
 	ns:Fire("ViewSelected", id)
 end
 
-StaticPopupDialogs["T3CODE_CLOSE_THREAD"] = {
-	text = "Close this Herdr tab? All panes and running processes in the tab will be terminated. This cannot be undone.",
-	button1 = "Close tab",
-	button2 = "Cancel",
-	OnAccept = function(_, data)
-		local t = data and ns.Store:Thread(data.id)
-		if t and t.closeTabId == data.tabId and ns.Store:Can("closeThread", t) then
-			ns.Transport:Send("closeThread", data.id, data.tabId)
-		end
-	end,
-	timeout = 0,
-	whileDead = true,
-	hideOnEscape = true,
-	preferredIndex = 3,
-}
-
 function M:CloseThread()
 	if self.mode ~= "thread" or not ns.viewId then return end
 	local t = ns.Store:Thread(ns.viewId)
@@ -383,7 +369,7 @@ function M:CloseThread()
 		return
 	end
 	if not t.closeTabId then return end
-	StaticPopup_Show("T3CODE_CLOSE_THREAD", nil, nil, { id = t.id, tabId = t.closeTabId })
+	ns.Transport:Send("closeThread", t.id, t.closeTabId)
 end
 
 function M:Back()
@@ -403,6 +389,37 @@ function M:Back()
 	self:LoadDraft()
 	self:Refresh()
 	ns:Fire("ViewSelected", nil)
+end
+
+-- The imported new-tab shortcut starts an empty agent, not a task form.
+-- Only desktop-configured launch projects can authorize the destination.
+function M:StartNewTab()
+	if ns.Store.data.bridge.backend ~= "Herdr" then return self:StartNewThread() end
+	if self.pendingNew then
+		ns.Print("The agent is still starting. Wait for the result before trying again.")
+		return
+	end
+	local filter = ns.db.settings.project
+	local viewed = ns.Store:Thread(ns.viewId)
+	if filter == "all" and viewed then filter = viewed.p end
+	local projectId
+	local last = ns.db.settings.lastProject
+	for _, project in ipairs(ns.Store.data.projects) do
+		if ns.Store:CanLaunchProject(project.id) and (filter == "all" or project.id == filter or project.filterId == filter) then
+			projectId = projectId or project.id
+			if project.id == last then projectId = project.id break end
+		end
+	end
+	self:StartNewThread(projectId)
+	if not projectId then
+		ns.Print("No launch project is configured for this space. Pick a configured project and enter a task to start Pi.")
+		return
+	end
+	ns.db.settings.lastProject = projectId
+	self.pendingNew = ns.Transport:Send("new", projectId, "")
+	-- Preserve any draft in the task form; it is not this session's first prompt.
+	self.pendingNewText = nil
+	self:Refresh()
 end
 
 function M:StartNewThread(projectId)
@@ -748,6 +765,12 @@ function M:Open()
 		ns.ThreadList:SelectSpace(ns.db.settings.project)
 	end
 	if not self.frame:IsShown() then self.frame:Show() end
+end
+
+function M:FocusInput()
+	if not self.frame or not self.frame:IsShown() then return end
+	self:ShowPage("threads")
+	self.composer:SetFocus()
 end
 
 function M:Toggle()

@@ -2,6 +2,12 @@
 	<Binding name="T3CODE_TOGGLE" header="T3CODE" category="ADDONS">
 		T3Code_Binding("toggle")
 	</Binding>
+	<Binding name="T3CODE_FULLSCREEN" category="ADDONS">
+		T3Code_Binding("fullscreen")
+	</Binding>
+	<Binding name="T3CODE_FOCUS_INPUT" category="ADDONS">
+		T3Code_Binding("focusInput")
+	</Binding>
 	<Binding name="T3CODE_NEW" category="ADDONS">
 		T3Code_Binding("new")
 	</Binding>

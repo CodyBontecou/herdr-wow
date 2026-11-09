@@ -73,6 +73,71 @@ export function markdownToWow(md, { maxChars = 3500 } = {}) {
   return s;
 }
 
+// Terminal screens are grids, not paragraphs. Flatten only explicitly bordered
+// tables; guessing columns from spaces would corrupt prose and command output.
+// This is display-only: guarded terminal controls still inspect the raw screen.
+export function terminalToWow(text) {
+  const lines = String(text ?? '').replace(/\r\n/g, '\n').split('\n');
+  const out = [];
+  const rule = (line) => /^\s*[┌┬┐├┼┤└┴┘╭╮╰╯╔╦╗╠╬╣╚╩╝─━═┏┳┓┣╋┫┗┻┛\s]+$/u.test(line) && /[─━═]/u.test(line);
+  const cells = (line) => {
+    const s = line.trim();
+    if (!/^[│┃║].*[│┃║]$/u.test(s)) return null;
+    return s.slice(1, -1).split(/[│┃║]/u).map((c) => c.trim());
+  };
+  let fence = null;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const marker = /^\s*(`{3,}|~{3,})/.exec(raw);
+    if (marker) {
+      if (!fence) fence = marker[1];
+      else if (marker[1][0] === fence[0] && marker[1].length >= fence.length) fence = null;
+      out.push(color(DIM, escapeWow(raw)));
+      continue;
+    }
+    if (fence) {
+      out.push(color(CODE, escapeWow(raw)));
+      continue;
+    }
+    // A header, divider and equally sized body rows establish a table. Border
+    // separators group wrapped cell lines into one logical row.
+    const header = cells(raw);
+    if (header && header.length > 1 && rule(lines[i + 1] || '')) {
+      const rows = [];
+      let row = null;
+      let j = i + 2;
+      for (; j < lines.length; j++) {
+        if (rule(lines[j])) {
+          row = null;
+          continue;
+        }
+        const next = cells(lines[j]);
+        if (!next || next.length !== header.length) break;
+        if (!row || next[0]) { row = next; rows.push(row); }
+        else next.forEach((c, k) => { if (c) row[k] += (row[k] ? ' ' : '') + c; });
+      }
+      if (rows.length) {
+        for (const entry of rows) {
+          out.push('', color(GOLD, escapeWow(entry[0] || header[0])));
+          entry.slice(1).forEach((value, k) => {
+            if (value) out.push(color(DIM, escapeWow(header[k + 1]) + ': ') + escapeWow(value));
+          });
+        }
+        out.push('');
+        i = j - 1;
+        continue;
+      }
+    }
+    if (rule(raw)) { out.push(''); continue; }
+    // Never send unsupported box glyphs to the game font, even for incomplete
+    // tables at the edge of a terminal viewport.
+    const safe = raw.replace(/[│┃║]/gu, ' / ').replace(/[\u2500-\u257f]/gu, '-');
+    const heading = /^\s{0,3}#{1,6}\s+(.*)$/.exec(safe);
+    out.push(heading ? color(GOLD, inline(heading[1])) : inline(safe));
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '');
+}
+
 export function markdownToSpeech(md, { maxChars = 1500 } = {}) {
   let s = String(md ?? '')
     .replace(/```[\s\S]*?```/g, ' (code block) ')

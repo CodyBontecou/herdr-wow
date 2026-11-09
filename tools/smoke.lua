@@ -75,6 +75,63 @@ check(#rows > 0, "transcript rendered " .. #rows .. " elements")
 local listRows = ns.ThreadList.scrollBox._rows or {}
 check(#listRows > 0, "thread list rendered " .. #listRows .. " rows")
 
+-- Structured cards expand locally without commands or losing their preview.
+do
+	local original = ns.Store.data.view
+	local before = #ns.Transport.queue
+	ns.Store.data.view = { id = ns.viewId, msgs = {
+		{ id = "tool-card", r = "a", kind = "tool", label = "bash", t = "preview", full = string.rep("output line\n", 30) },
+		{ id = "thought", r = "a", kind = "thinking", label = "Thinking", t = "Considering options" },
+		{ id = "reply", r = "a", kind = "text", label = "Pi", t = "Done" },
+	} }
+	ns.Transcript:Refresh(true)
+	local card, toggle
+	for _, r in ipairs(ns.Transcript.scrollBox._rows) do
+		if r.ed.msg and r.ed.msg.id == "tool-card" then card = r end
+		if r.ed.kind == "option" and r.ed.label == "Expand output" then toggle = r end
+	end
+	check(card and toggle and card.frame.Body:GetText() == "preview", "tool card starts collapsed with an expand control")
+	local height = card.ed.height
+	toggle.ed.onClick()
+	local collapse
+	for _, r in ipairs(ns.Transcript.scrollBox._rows) do
+		if r.ed.msg and r.ed.msg.id == "tool-card" then card = r end
+		if r.ed.kind == "option" and r.ed.label == "Collapse output" then collapse = r end
+	end
+	check(collapse and card.ed.height > height and card.frame.Body:GetText():find("output line", 1, true), "expanding a card remeasures the full body")
+	collapse.ed.onClick()
+	check(not ns.Transcript.expanded["tool-card"] and #ns.Transport.queue == before, "collapse is local and sends no terminal input")
+	ns.Store.data.view = original
+	ns.Transcript:Refresh(true)
+end
+
+-- The focus shortcut returns to the conversation without opening a closed panel.
+do
+	local box = ns.Main.composer
+	box:ClearFocus()
+	ns.Main.frame:Hide()
+	T3Code_Binding("focusInput")
+	check(not ns.Main.frame:IsShown() and not box:HasFocus(), "focus input does nothing while panel is closed")
+	ns.Main:Open()
+	check(box:HasFocus(), "opening threads focuses the composer")
+	box:ClearFocus()
+	ns.Main:Refresh()
+	check(not box:HasFocus(), "refresh does not steal composer focus")
+	ns.Main:ShowPage("settings")
+	ns.Main.frame:Hide()
+	ns.Main:Open()
+	check(not box:HasFocus(), "opening settings does not focus the composer")
+	ns.Main:ShowPage("threads")
+	check(box:HasFocus(), "returning to threads focuses the composer")
+	box:ClearFocus()
+	ns.Main:ShowPage("settings")
+	local draft, selected = box:GetText(), ns.viewId
+	T3Code_Binding("focusInput")
+	check(ns.Main.page == "threads" and box:HasFocus(), "focus input returns to threads and focuses composer")
+	check(box:GetText() == draft and ns.viewId == selected, "focus input preserves draft and selected thread")
+	box:ClearFocus()
+end
+
 -- Fishing mode observes manual casts without opening for other channels/units.
 do
 	local f = ns.Main.frame
@@ -293,26 +350,22 @@ do
 	s.autoRead, s.tts = oldRead, oldVoice
 end
 
--- Closing requires confirmation tied to the original thread and tab identity.
+-- The close shortcut sends immediately with the current thread and tab identity.
 do
 	local t = ns.Store:Thread(ns.viewId)
 	local oldCaps, oldTab = t.caps, t.closeTabId
 	local oldId = ns.viewId
 	t.caps, t.closeTabId = { closeThread = true }, "w1:t1"
 	local queued = #ns.Transport.queue
+	Stub.popup = nil
 	T3Code_Binding("closeThread")
-	local popup = Stub.popup
-	check(popup and #ns.Transport.queue == queued, "close binding prompts without sending a command")
-	local accept = StaticPopupDialogs[popup.which].OnAccept
-	ns.viewId = "another-thread"
-	accept(nil, popup.data)
 	local cmd = ns.Transport.queue[#ns.Transport.queue]
-	check(cmd.verb == "closeThread" and cmd.args[1] == oldId and cmd.args[2] == "w1:t1", "confirmation closes its original tab, not a newly selected thread")
-	t.closeTabId = "w1:t2"
+	check(not Stub.popup and #ns.Transport.queue == queued + 1, "close binding sends immediately without confirmation")
+	check(cmd.verb == "closeThread" and cmd.args[1] == oldId and cmd.args[2] == "w1:t1", "close binding targets the current thread and tab")
+	t.closeTabId = nil
 	queued = #ns.Transport.queue
-	accept(nil, popup.data)
-	check(#ns.Transport.queue == queued, "confirmation refuses a moved tab")
-	ns.viewId = oldId
+	T3Code_Binding("closeThread")
+	check(#ns.Transport.queue == queued, "close binding requires a tab identity")
 	t.caps, t.closeTabId = nil, oldTab
 	Stub.popup = nil
 	T3Code_Binding("closeThread")
@@ -468,6 +521,20 @@ do
 	checkbox:SetChecked(false)
 	checkbox._scripts.OnClick(checkbox)
 	check(f:GetWidth() == 940 and f:GetHeight() == 640 and f:GetScale() == 1.3, "leaving fullscreen restores normal dimensions and preferred scale")
+	T3Code_Binding("fullscreen")
+	check(ns.db.settings.fullscreen and checkbox:GetChecked(), "fullscreen shortcut updates the preference and settings checkbox")
+	check(math.abs(f:GetWidth() * f:GetScale() - UIParent:GetWidth()) < 0.01, "fullscreen shortcut fills the screen")
+	T3Code_Binding("fullscreen")
+	check(not ns.db.settings.fullscreen and not checkbox:GetChecked() and f:GetWidth() == 940, "fullscreen shortcut restores windowed mode")
+	f:Hide()
+	T3Code_Binding("fullscreen")
+	check(not f:IsShown() and ns.db.settings.fullscreen, "fullscreen shortcut does not open a closed window")
+	T3Code_Binding("toggle")
+	check(f:IsShown() and ns.db.settings.fullscreen, "window shortcut opens in the selected fullscreen mode")
+	T3Code_Binding("toggle")
+	check(not f:IsShown(), "window shortcut closes the window")
+	T3Code_Binding("fullscreen")
+	ns.Main:Open()
 	ns.db.settings.windowPoint = oldPoint
 end
 ns.db.settings.windowScale = "auto"
@@ -562,6 +629,25 @@ check(ns.Transport:Payload():find("answer\031" .. ns.viewId .. "\031terminal-pad
 data.gen = data.gen + 1
 data.view.pending = nil
 ns.Transport:Apply(data)
+-- Expand controls participate in the same controller column as answers.
+do
+	local original, quick = data.view.msgs, ns.db.settings.quickReplies
+	ns.db.settings.quickReplies = false
+	data.gen = data.gen + 1
+	data.view.msgs = { { id = "pad-tool", r = "a", kind = "tool", label = "bash", t = "preview", full = "full output" } }
+	ns.Transport:Apply(data)
+	ns.Gamepad:Highlight(ns.Main.composer)
+	down(f, "PADDUP")
+	local option
+	for _, r in ipairs(ns.Transcript.scrollBox._rows) do if r.frame == ns.Gamepad.selected then option = r.ed end end
+	check(option and option.label == "Expand output", "controller can navigate from the composer to a tool expansion")
+	local before = #ns.Transport.queue
+	down(f, "PAD1")
+	check(ns.Transcript.expanded["pad-tool"] and #ns.Transport.queue == before, "controller expands tool output without sending terminal input")
+	data.view.msgs, ns.db.settings.quickReplies = original, quick
+	data.gen = data.gen + 1
+	ns.Transport:Apply(data)
+end
 -- A on the project dropdown opens a real list; the cursor moves inside it
 ns.Gamepad:Highlight(ns.ThreadList.dropdown)
 down(f, "PAD1")
@@ -794,6 +880,34 @@ do
 	ns.Main:Open()
 	ns.Main:Refresh()
 	check(ns.ThreadList.tabs:IsShown(), "Herdr shows top tab navigation")
+	-- The stub does not resolve anchors: simulate the bar's resulting widths
+	-- and the client's size event after fullscreen grows/shrinks its parent.
+	local tabs = ns.ThreadList.tabs
+	local savedWidth = tabs:GetWidth()
+	tabs:SetWidth(1500)
+	ns.ThreadList:RefreshTabs()
+	for _, width in ipairs({ 600, 1500, 600 }) do
+		tabs:SetWidth(width)
+		local resized = tabs:GetScript("OnSizeChanged")
+		if resized then resized(tabs, width, tabs:GetHeight()) end
+		local button = tabs.buttons[3]
+		local point = button._points[1]
+		check(point[4] + button:GetWidth() <= width - 32, "tabs stay inside the bar after fullscreen resize to " .. width)
+		check(math.abs(button:GetWidth() - (width - 72) / 3) < 0.01, "tabs fill the resized bar")
+	end
+	tabs:SetWidth(savedWidth)
+	ns.ThreadList:RefreshTabs()
+	local savedProject = ns.db.settings.project
+	ns.ThreadList.defaultSelected = nil
+	ns.db.settings.project = "all"
+	ns.ThreadList:DefaultSpace()
+	check(ns.db.settings.project == th.p, "initial Herdr space follows the viewed tab instead of mixing all spaces")
+	ns.db.settings.project = "all"
+	ns.ThreadList:DefaultSpace()
+	check(ns.db.settings.project == "all", "explicit all-spaces selection survives later opens")
+	ns.db.settings.project = savedProject
+	ns.ThreadList:SelectSpace("space:test")
+	check(ns.ThreadList.tabs.buttons[1].ActiveLine:IsShown(), "selected Herdr tab has an active indicator")
 	local spaces = {}
 	for i = 1, ns.ThreadList.scrollBox:GetDataProviderSize() do
 		local ed = ns.ThreadList.scrollBox:FindElementData(i)
@@ -822,9 +936,11 @@ do
 	ns.Main.frame:Hide()
 	T3Code_Binding("nextWorkspace")
 	check(ns.db.settings.project == "space:empty" and ns.windowOpen and ns.Main.page == "threads", "next workspace opens the space filter including empty spaces")
-	check(ns.viewId == th.id and ns.Main.composer:GetText() == "workspace navigation draft" and ns.ThreadList.query == "zzzz-no-match", "workspace switching preserves conversation, draft and search")
+	check(ns.viewId == nil and ns.db.drafts[th.id] == "workspace navigation draft" and ns.ThreadList.query == "zzzz-no-match", "empty workspace clears selection while saving the previous draft and search")
+	ns.ThreadList.query = nil
 	T3Code_Binding("nextWorkspace")
 	check(ns.db.settings.project == "space:test", "next workspace wraps without visiting launch aliases or all-spaces")
+	check(ns.viewId == th.id and ns.Main.composer:GetText() == "workspace navigation draft", "workspace switching selects its first tab and restores its draft")
 	T3Code_Binding("previousWorkspace")
 	check(ns.db.settings.project == "space:empty", "previous workspace wraps in reverse")
 	ns.db.settings.project = "all"
@@ -833,6 +949,16 @@ do
 	ns.db.settings.project = "m:local"
 	T3Code_Binding("previousWorkspace")
 	check(ns.db.settings.project == "space:empty", "previous workspace from a machine filter selects the last browse space")
+	local laterTab = { id = "herdr-later", title = "Later tab", p = th.p, s = "working", caps = caps }
+	data.threads = { th, laterTab }
+	ns.Store:Apply(data)
+	T3Code_Binding("nextWorkspace")
+	check(ns.viewId == th.id and ns.ThreadList.tabs.buttons[1].thread.id == th.id, "workspace selects the first desktop tab rather than a later working tab")
+	ns.Main:SelectThread(laterTab.id)
+	ns.ThreadList:SelectSpace(th.p)
+	check(ns.viewId == th.id, "clicking a space also selects its first tab")
+	data.threads = { th }
+	ns.Store:Apply(data)
 	local projects = data.projects
 	data.projects = {}
 	ns.Store:Apply(data)
@@ -854,6 +980,28 @@ do
 	ns:Fire("CommandResult", { id = pending, ok = false, msg = "Startup timed out; inspect Herdr" })
 	check(ns.Main.composer:GetInputText() == "Start this Pi task", "failed startup restores the prompt")
 	check(ns.Main.pendingNew == nil, "failed startup clears pending state")
+	-- Shortcut launches are empty, space-scoped and deduplicated, even with a
+	-- saved task-form draft or a last-used project in another space.
+	data.projects[#data.projects + 1] = { id = "other-project", name = "Other", launch = true, browse = false, filterId = "space:empty" }
+	ns.Store:Apply(data)
+	ns.db.settings.project = "space:test"
+	ns.db.settings.lastProject = "other-project"
+	count = #ns.Transport.queue
+	T3Code_Binding("new")
+	local shortcut = ns.Transport.queue[#ns.Transport.queue]
+	check(#ns.Transport.queue == count + 1 and shortcut.verb == "new" and shortcut.args[1] == "pi-project" and shortcut.args[2] == "", "new-tab shortcut starts an empty agent in the selected space, not the last-used space")
+	pending = ns.Main.pendingNew
+	T3Code_Binding("new")
+	check(#ns.Transport.queue == count + 1 and ns.Main.pendingNew == pending, "new-tab shortcut cannot duplicate a pending launch")
+	ns:Fire("CommandResult", { id = pending, ok = true, open = th.id })
+	check(ns.Main.mode == "thread" and ns.viewId == th.id, "new-tab startup result selects the fresh agent")
+	check(ns.db.drafts.__new == "Start this Pi task", "empty shortcut launch preserves the saved task-form draft")
+	table.remove(data.projects)
+	ns.Store:Apply(data)
+	ns.db.settings.project = "space:empty"
+	count = #ns.Transport.queue
+	T3Code_Binding("new")
+	check(#ns.Transport.queue == count and not ns.Main.pendingNew, "new-tab shortcut never silently launches into another space")
 	th.kind, th.caps = "terminal", { send = false }
 	ns.Main:SelectThread(th.id)
 	ns.Main:Refresh()

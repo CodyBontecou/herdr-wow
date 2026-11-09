@@ -173,6 +173,15 @@ test('launch creates a no-focus Pi tab in the allowlisted project and submits li
   assert.equal(f.backend.threads.get(threadId).projectId, 'space:w1');
 });
 
+test('empty new-tab launch starts a fresh Pi session without submitting a prompt', async (t) => {
+  const f = fixture(t);
+  const { threadId } = await f.backend.launchThread('demo', '');
+  assert.equal(f.backend.threads.get(threadId).uiStatus, 'open');
+  assert.deepEqual(f.calls.map((c) => c.args.slice(0, 2)), [['tab', 'create'], ['agent', 'start']]);
+  assert.deepEqual(f.calls[1].args.slice(3), ['--kind', 'pi', '--pane', 'w1:p2']);
+  assert.ok(f.calls[0].args.includes('--no-focus'));
+});
+
 test('new shell readiness retries only definite pre-submission busy rejections', async (t) => {
   const f = fixture(t);
   f.busyOnce();
@@ -421,6 +430,33 @@ test('startup failure keeps the created tab for inspection and never retries or 
   f.failStart();
   await assert.rejects(f.backend.launchThread('demo', 'hello'), /Check Herdr pane w1:p2.*tab was kept/);
   assert.deepEqual(f.calls.map((c) => c.args.slice(0, 2)), [['tab', 'create'], ['agent', 'start']]);
+});
+
+test('Pi structured cards reach snapshots without duplicate terminal output, with fallback when unavailable', async (t) => {
+  const f = fixture(t);
+  f.setAgents([f.agent()]);
+  await f.backend.refresh();
+  const id = [...f.backend.threads.keys()][0];
+  const blocks = [{ id: 'card', kind: 'tool', label: 'bash', status: 'done', text: 'echo hello\n\n' + 'output\n'.repeat(30) }];
+  f.backend.readSession = () => blocks;
+  const projection = await f.backend.threadProjection(id);
+  assert.equal(projection.blocks, blocks);
+  assert.equal(projection.terminalOutput, undefined);
+  const b = new Bridge({ addonsDir: path.join(f.root, 'addons'), config: { backend: 'herdr', herdr: f.config }, stateDir: path.join(f.root, 'state'), log: () => {} });
+  b.t3 = f.backend;
+  t.after(() => { b.stop(); clearTimeout(b.saveTimer); });
+  b.client = { view: id, flags: 'o' };
+  b.views.set(id, { projection, fetchedAt: Date.now() });
+  const rows = b.buildSnapshot().view.msgs;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, 'tool');
+  assert.ok(rows[0].full);
+  assert.equal(rows[0].label, 'bash · Completed');
+  f.setAgents([f.agent({ agent_status: 'blocked' })]);
+  assert.ok((await f.backend.threadProjection(id)).terminalOutput, 'blocked Pi screens remain visible instead of showing stale saved messages');
+  f.setAgents([f.agent()]);
+  f.backend.readSession = () => null;
+  assert.equal((await f.backend.threadProjection(id)).terminalOutput, 'literal | WoW markup\nsecond line');
 });
 
 test('bridge sends new-thread results, escapes terminal output and rejects unsupported actions without capture', async (t) => {

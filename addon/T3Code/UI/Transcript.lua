@@ -18,15 +18,25 @@ local QUICK_REPLIES = {
 }
 
 local BODY_FONT = "GameFontHighlight"
-local PAD_X = 10
+local PAD_X = 16
 
 ---------------------------------------------------------------------------
 -- Measuring text so rows get the right height
 
 local measurer
-local BODY_SPACING = 2
+local BODY_SPACING = 4
+local MONO_FONT = "Interface\\AddOns\\T3Code\\Fonts\\JetBrainsMono-Regular.ttf"
 
-local function Measure(text, width, font, spacing)
+local function IsCode(msg)
+	return msg.kind == "code" or msg.kind == "tool"
+end
+
+local function BodyFont(fs, mono)
+	fs:SetFontObject(BODY_FONT)
+	if mono then fs:SetFont(MONO_FONT, 12, "") end
+end
+
+local function Measure(text, width, font, spacing, mono)
 	if not measurer then
 		measurer = UIParent:CreateFontString(nil, "BACKGROUND", BODY_FONT)
 		measurer:SetPoint("TOPLEFT", UIParent, "TOPLEFT", -5000, 5000)
@@ -34,6 +44,7 @@ local function Measure(text, width, font, spacing)
 		measurer:SetAlpha(0)
 	end
 	measurer:SetFontObject(font or BODY_FONT)
+	if mono then measurer:SetFont(MONO_FONT, 12, "") end
 	measurer:SetSpacing(spacing or 0)
 	measurer:SetWidth(width)
 	measurer:SetText(text)
@@ -51,6 +62,12 @@ end
 
 local function InitMessage(frame, ed)
 	if not frame.Body then
+		frame.Card = frame:CreateTexture(nil, "BACKGROUND")
+		frame.Card:SetAllPoints()
+		frame.Accent = frame:CreateTexture(nil, "ARTWORK")
+		frame.Accent:SetPoint("TOPLEFT", 0, 0)
+		frame.Accent:SetPoint("BOTTOMLEFT", 0, 0)
+		frame.Accent:SetWidth(3)
 		frame.Label = frame:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
 		frame.Label:SetPoint("TOPLEFT", PAD_X, -6)
 		frame.Body = frame:CreateFontString(nil, "ARTWORK", BODY_FONT)
@@ -67,13 +84,24 @@ local function InitMessage(frame, ed)
 		frame.Time:SetPoint("RIGHT", frame.Speak, "LEFT", -6, 0)
 	end
 	local m = ed.msg
+	local palette = m.error and { 0.85, 0.3, 0.3 } or m.kind == "tool" and { 0.35, 0.7, 0.75 }
+		or m.kind == "code" and { 0.55, 0.6, 0.85 } or m.kind == "user" and { 0.7, 0.58, 0.25 }
+		or m.kind == "thinking" and { 0.4, 0.43, 0.5 } or { 0.25, 0.3, 0.4 }
+	frame.Card:SetColorTexture(0.055, 0.065, 0.085, 0.96)
+	frame.Card:SetShown(m.kind ~= nil and m.kind ~= "text")
+	frame.Accent:SetColorTexture(palette[1], palette[2], palette[3], 0.9)
+	frame.Accent:SetShown(m.kind ~= nil and m.kind ~= "text")
+	BodyFont(frame.Body, IsCode(m))
+	frame.Body:SetTextColor(1, 1, 1)
+	if m.kind == "thinking" then frame.Body:SetTextColor(0.65, 0.68, 0.74) end
+	frame.Body:SetSpacing(IsCode(m) and 2 or BODY_SPACING)
 	if m.r == "u" then
 		frame.Label:SetText(ns.Color("gold", ed.echo and "you  |cff9d9d9d(sending…)|r" or "you"))
 	else
 		frame.Label:SetText(ns.Color("agent", m.label or "agent") .. (m.live and ns.Color("grey", "  writing…") or ""))
 	end
 	frame.Body:SetWidth(T:BodyWidth())
-	frame.Body:SetText(m.t)
+	frame.Body:SetText(ed.text)
 	-- If the real text is taller than estimated (font or scale differences), grow the
 	-- row and lay the list out again rather than letting the next row overlap it.
 	local needed = 34 + math.ceil(frame.Body:GetStringHeight())
@@ -89,7 +117,7 @@ local function InitMessage(frame, ed)
 		end
 	end
 	frame.Time:SetText(m.at and date("%H:%M", m.at) or "")
-	frame.Speak:SetShown(m.r == "a")
+	frame.Speak:SetShown(m.r == "a" and not m.kind)
 	frame.Speak:SetScript("OnClick", function() ns.Speak(m.t, ns.viewId, m.n) end)
 end
 
@@ -163,6 +191,11 @@ function T:Create(parent, header, composer)
 	inset:SetPoint("TOPLEFT", header, "BOTTOMLEFT", -2, -4)
 	inset:SetPoint("BOTTOMRIGHT", composer, "TOPRIGHT", 0, 4)
 	self.inset = inset
+	-- A quiet reading surface keeps terrain from competing with long replies.
+	local paper = inset:CreateTexture(nil, "BACKGROUND", nil, 1)
+	paper:SetAllPoints()
+	paper:SetColorTexture(0.025, 0.03, 0.04, 0.92)
+	self.paper = paper
 
 	local scrollBox = CreateFrame("Frame", nil, inset, "WowScrollBoxList")
 	scrollBox:SetPoint("TOPLEFT", 4, -4)
@@ -200,11 +233,14 @@ end
 
 T.heightFix = {} -- corrected row heights, by text and width
 
-local function MessageElement(msg, echo)
+local function MessageElement(msg, echo, text)
 	local width = T:BodyWidth()
-	local fixKey = math.floor(width) .. ":" .. msg.t
-	local height = math.max(34 + Measure(msg.t, width, BODY_FONT, BODY_SPACING), T.heightFix[fixKey] or 0)
-	return { kind = "msg", msg = msg, echo = echo, height = height, fixKey = fixKey }
+	text = text or msg.t
+	local mono = IsCode(msg)
+	local spacing = mono and 2 or BODY_SPACING
+	local fixKey = math.floor(width) .. ":" .. tostring(msg.kind) .. ":" .. text
+	local height = math.max(34 + Measure(text, width, BODY_FONT, spacing, mono), T.heightFix[fixKey] or 0)
+	return { kind = "msg", msg = msg, text = text, echo = echo, height = height, fixKey = fixKey }
 end
 
 local function Note(text, icon, opts)
@@ -335,8 +371,17 @@ function T:Elements()
 		table.insert(list, Note(ns.Color("grey", "Earlier messages are on your desktop."), "common-icon-undo"))
 	end
 	local echo = self.echo[id]
+	if self.expandedView ~= id then self.expanded, self.expandedView = {}, id end
 	for _, m in ipairs(v.msgs or {}) do
-		table.insert(list, MessageElement(m))
+		local blockId = m.id
+		local expanded = blockId and self.expanded[blockId]
+		table.insert(list, MessageElement(m, nil, expanded and m.full or m.t))
+		if m.full and blockId then
+			table.insert(list, Option(expanded and "Collapse output" or "Expand output", function()
+				T.expanded[blockId] = not T.expanded[blockId]
+				T:Refresh(true)
+			end))
+		end
 		if echo and m.r == "u" and ns.StripMarkup(m.t):find(echo.text:sub(1, 40), 1, true) then
 			self.echo[id] = nil
 			echo = nil

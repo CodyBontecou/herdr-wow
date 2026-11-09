@@ -23,8 +23,9 @@ import { tokenProvider } from './auth.js';
 import { Voice } from './voice.js';
 import { OmarchyUsage, mergeUsage } from './usage.js';
 import { findWowProcess, processKey } from './wow.js';
-import { markdownToWow, markdownToSpeech, firstLine, escapeWow } from './format.js';
+import { markdownToWow, markdownToSpeech, firstLine, escapeWow, terminalToWow } from './format.js';
 import { loadOrCreateKey, deriveKeys, open as openSealed, ENCRYPTED_VERSION } from './strip-crypto.js';
+import { wowBlocks } from './blocks.js';
 
 export const VERSION = '0.1.0';
 export const STATE_DIR = path.join(process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local/state'), 't3code-wow');
@@ -647,7 +648,7 @@ export class Bridge {
         // label alone ("Thinking" -> "Running ls") can wait for the slower pace.
         const msgs = p.messages || [];
         const last = msgs.at(-1);
-        v.contentKey = [msgs.length, last?.text?.length, last?.updatedAt, p.terminalOutput, pendingRequest(p)?.id, proposedPlan(p)?.length, (p.runs || []).filter((r) => r.status === 'queued').length].join('|');
+        v.contentKey = [msgs.length, last?.text?.length, last?.updatedAt, p.terminalOutput, p.blocks ? createHash('sha256').update(JSON.stringify(p.blocks)).digest('hex') : '', pendingRequest(p)?.id, proposedPlan(p)?.length, (p.runs || []).filter((r) => r.status === 'queued').length].join('|');
         if (threadId === this.client?.view) this.markDirty(v.contentKey !== prevContent ? 'view' : 'minor');
         else if (activityLabel(p) !== prevLabel) this.markDirty('minor');
       })
@@ -796,7 +797,7 @@ export class Bridge {
       const t = t3.threads.get(viewId);
       if (v?.projection) {
         const p = v.projection;
-        const msgs = (p.messages || []).filter((m) => (m.role === 'user' || m.role === 'assistant') && m.text?.trim());
+        const msgs = (p.blocks ? [] : p.messages || []).filter((m) => (m.role === 'user' || m.role === 'assistant') && m.text?.trim());
         let budget = 60000;
         const out = [];
         for (let i = msgs.length - 1; i >= 0 && out.length < 40; i--) {
@@ -806,14 +807,15 @@ export class Bridge {
           if (budget < 0 && out.length > 0) break;
           out.unshift({ r: m.role === 'user' ? 'u' : 'a', t: text, at: sec(m.createdAt), live: m.streaming || undefined, n: i + 1 });
         }
+        if (p.blocks) out.splice(0, out.length, ...wowBlocks(p.blocks));
         if (typeof p.terminalOutput === 'string' && p.terminalOutput.length > 0) {
-          out.push({ r: 'a', label: 'terminal', t: escapeWow(p.terminalOutput.slice(-16000)), n: 1 });
+          out.push({ r: 'a', label: 'Recent terminal output', t: terminalToWow(p.terminalOutput.slice(-16000)), n: 1 });
         }
         view = {
           id: viewId,
           note: p.note ? escapeWow(p.note) : undefined,
           msgs: out,
-          more: msgs.length > out.length || undefined,
+          more: (p.blocks ? p.blocks.length : msgs.length) > out.length || undefined,
           pending: pendingRequest(p) || undefined,
           act: t && threadStatus(t) === 'working' ? escapeWow(activityLabel(p) || 'Working') : undefined,
           err: t?.lastError ? escapeWow(String(t.lastError).slice(0, 300)) : undefined,

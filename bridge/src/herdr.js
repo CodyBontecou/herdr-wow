@@ -6,6 +6,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { questionControls } from './herdr-questions.js';
+import { readPiSession } from './pi-session.js';
 
 const PROMPT_AGENTS = new Set(['pi', 'codex', 'claude']);
 const spaceId = (workspace) => `space:${workspace}`;
@@ -108,7 +109,7 @@ function sessionKey(agent) {
 }
 
 export class HerdrBackend extends EventEmitter {
-  constructor({ config, log = () => {}, run = herdrCommand } = {}) {
+  constructor({ config, log = () => {}, run = herdrCommand, readSession = readPiSession } = {}) {
     super();
     this.settings = { ...config, session: config?.session || 'default' };
     const projects = validateHerdrConfig(config);
@@ -120,6 +121,7 @@ export class HerdrBackend extends EventEmitter {
     this.visited = new Map();
     this.questions = new Map();
     this.log = log;
+    this.readSession = readSession;
     this.run = (args, options = {}) => run(args, { ...options, session: this.settings.session });
     this.state = 'disconnected';
     this.error = null;
@@ -252,6 +254,11 @@ export class HerdrBackend extends EventEmitter {
     const readOnly = !PROMPT_AGENTS.has(agent.agent);
     const output = agent.agent === 'pi' ? withoutPiFooter(read.text) : read.text;
     const terminalQuestion = this.questionFor(id, agent, read.text);
+    const blocks = !terminalQuestion && agent.agent === 'pi' && ['idle', 'done', 'working'].includes(agent.agent_status) ? this.readSession(agent) : null;
+    if (blocks) {
+      const messages = blocks.filter((b) => b.kind === 'user' || b.kind === 'text').map((b) => ({ role: b.kind === 'user' ? 'user' : 'assistant', text: b.text, createdAt: b.at, updatedAt: b.at }));
+      return { blocks, messages, note: 'Pi’s last saved branch. In-progress replies appear when Pi saves them. Questions and approvals still use Herdr.' };
+    }
     return { terminalOutput: withoutTerminalPadding(output), terminalTruncated: read.truncated, terminalQuestion, messages: [], note: `Recent terminal output, not full conversation history. ${readOnly ? 'This tab is read-only; use Herdr to interact with it.' : terminalQuestion ? 'Question controls send keys to the displayed terminal. Review each screen before submitting. Written text is entered without submitting.' : 'Unrecognized questions and approvals must be handled in Herdr.'}` };
   }
 
@@ -265,7 +272,7 @@ export class HerdrBackend extends EventEmitter {
     await this.refresh();
   }
 
-  async launchThread(projectId, text, attachments = []) {
+  async launchThread(projectId, text = '', attachments = []) {
     const project = this.launchProjects.get(projectId);
     if (!project) throw new Error('Pick a configured Herdr project');
     if (attachments.length) throw new Error('Screenshots are not supported by the Herdr backend yet');
@@ -297,7 +304,9 @@ export class HerdrBackend extends EventEmitter {
       const id = spaceId(project.workspace);
       if (!this.projects.has(id)) this.projects.set(id, { id, title: project.workspace, browse: true, launch: false });
       const threadId = this.ingest(agent, this.projects.get(id), created.tab);
-      await this.sendMessage(threadId, text);
+      // An empty new-tab request leaves a fresh Pi session ready for input.
+      // Never submit an empty prompt or implicitly resume an existing session.
+      if (text.trim()) await this.sendMessage(threadId, text);
       return { threadId };
     } catch (err) {
       // The operation may have partially succeeded. Keep the tab for inspection;
