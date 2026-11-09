@@ -8,6 +8,27 @@ Browse your spaces and tabs, read agent conversations, reply to idle agents, and
 
 **Experimental.** This fork adds native macOS capture and Herdr support to [Ryan Hughes's T3 Code addon](https://github.com/ryanrhughes/t3code-wow). The original Linux/T3 backend remains available. Native macOS transport has been exercised in game, but not every client version, sound setting, display setup or controller combination has been verified.
 
+## In-game screenshots
+
+Real captures from native macOS Forever, cropped to the addon window.
+
+**Pi tool cards** — read syntax-colored tool arguments alongside your spaces and tabs.
+
+![Herdr showing Pi tool cards in World of Warcraft](https://github.com/CodyBontecou/herdr-wow/releases/download/readme-media/04-tool-cards.png)
+
+<details>
+<summary>New-session form and notification settings</summary>
+
+**New Thread** — choose an allowlisted project before starting Pi. This capture shows the form, not a completed launch.
+
+![Herdr New Thread form with a configured Pi project](https://github.com/CodyBontecou/herdr-wow/releases/download/readme-media/03-new-session.png)
+
+**Settings** — notification, tracker and read-aloud preferences.
+
+![Herdr notification and tracker settings](https://github.com/CodyBontecou/herdr-wow/releases/download/readme-media/02-settings.png)
+
+</details>
+
 ## What works
 
 - **Your desktop organization, in game:** browse every space and tab in one selected Herdr session, in desktop order. Activity changes no longer shuffle tabs. Filter by space or inspect numbered pane rows in split tabs; empty spaces remain visible.
