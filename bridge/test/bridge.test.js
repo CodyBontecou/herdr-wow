@@ -118,10 +118,17 @@ test('publish writes the next slots and bootstrap slots, then raises one signal'
 
 test('commands run once, in order, and results are published', async () => {
   const { b, dir, calls } = fakeBridge();
+  const send = b.t3.sendMessage;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  b.t3.sendMessage = async (...args) => { await gate; return send(...args); };
   const f = frame(2, [['H', 1, 'sess', 'ui1', 1, 1, 0, 'o', 't1', '0.1.0'], ['C', 1, 'send', 't1', 'hello'], ['C', 2, 'new', 'p1', 'start it']]);
   b.onFrame(f);
   b.onFrame(f); // seen again: not re-run
-  await new Promise((r) => setTimeout(r, 20));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, [], 'new must not overtake an unfinished send');
+  release();
+  await b.commandTail;
   assert.deepEqual(calls.map((c) => c[0]), ['send', 'new']);
   assert.equal(calls[0][2], 'hello');
   b.publishNow();
@@ -286,6 +293,29 @@ test('read-aloud waits while the player is in combat', () => {
   assert.ok(b.deferredAnnounce);
   b.onFrame(frame(2, [['H', 1, 'sess', 'ui1', 1, 1, 0, 'or', '', '0.1.0']]));
   b.stop();
+});
+
+test('disabling automatic notifications discards queued speech and cancels an announcement awaiting data', async (t) => {
+  const { b } = fakeBridge();
+  t.after(() => { b.stop(); clearTimeout(b.saveTimer); });
+  const spoken = [];
+  b.voice.speak = (text) => spoken.push(text);
+  const hello = (seq, flags) => frame(seq, [['H', 1, 'sess', 'ui1', 1, 1, 0, flags, '', '0.1.0']]);
+  b.onFrame(hello(1, 'or'));
+  let release;
+  b.projection = () => new Promise((resolve) => { release = resolve; });
+  const pending = b.announce({ id: 't1', title: 'Fix it' }, 'open');
+  b.onFrame(hello(2, 'o'));
+  release({ messages: [{ role: 'assistant', text: 'Finished' }] });
+  await pending;
+  assert.deepEqual(spoken, [], 'a pending fetch must not speak after the switch is disabled');
+  b.onFrame(hello(3, 'orq'));
+  await b.announce({ id: 't1', title: 'Fix it' }, 'open');
+  assert.ok(b.deferredAnnounce);
+  b.onFrame(hello(4, 'oq'));
+  assert.equal(b.deferredAnnounce, null, 'disabling clears combat-delayed speech');
+  await b.runCommand({ id: 1, verb: 'say', args: ['Read this manually'] });
+  assert.deepEqual(spoken, ['Read this manually'], 'manual read-aloud remains available');
 });
 
 test('pacing: fast while reading, patient otherwise, reserve kept for alerts', () => {

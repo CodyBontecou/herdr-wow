@@ -8,7 +8,8 @@ import path from 'node:path';
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 't3wow-home-'));
 process.env.HOME = home;
 delete process.env.WINEPREFIX;
-const { findWowInstalls } = await import('../src/wow.js');
+const { findWowInstalls: discover, parseMacWowProcess, processKey } = await import('../src/wow.js');
+const findWowInstalls = () => discover({ platform: 'linux' });
 
 function touch(p, content = '') {
   fs.mkdirSync(path.dirname(p), { recursive: true });
@@ -58,4 +59,21 @@ test('tells WoW without Forever apart from no WoW at all, and ignores other game
   r = findWowInstalls();
   assert.deepEqual([r.forever.length, r.wowOnly.length], [0, 0]);
   assert.deepEqual(r.prefixes, [omarchy()], 'only prefixes that really hold Battle.net');
+});
+
+test('native discovery and process identity distinguish Forever, another install and PID reuse', (t) => {
+  reset();
+  const native = fs.mkdtempSync(path.join(os.tmpdir(), 't3wow-native-'));
+  t.after(() => fs.rmSync(native, { recursive: true, force: true }));
+  const wow = path.join(native, 'World of Warcraft');
+  const flavor = path.join(wow, '_forever_');
+  fs.mkdirSync(path.join(flavor, 'World of Warcraft.app'), { recursive: true });
+  assert.deepEqual(discover({ platform: 'darwin', nativeRoots: [wow] }).forever, [flavor]);
+  const executable = path.join(flavor, 'World of Warcraft.app/Contents/MacOS/World of Warcraft');
+  const ps = `  42 Mon Nov  9 10:00:00 2026 ${executable}\n  43 Mon Nov  9 10:00:01 2026 /Applications/World of Warcraft/_retail_/World of Warcraft.app/Contents/MacOS/World of Warcraft`;
+  const proc = parseMacWowProcess(ps, flavor);
+  assert.equal(proc.pid, 42);
+  assert.equal(parseMacWowProcess(ps, path.join(native, 'Other/_forever_')), null);
+  assert.equal(parseMacWowProcess(ps.split('\n')[1]), null);
+  assert.notEqual(processKey(proc), processKey(parseMacWowProcess(ps.replace('10:00:00', '10:02:00'), flavor)));
 });

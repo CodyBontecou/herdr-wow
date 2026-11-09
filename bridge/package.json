@@ -1,20 +1,21 @@
 {
-  "name": "t3code-wow",
+  "name": "herdr-wow",
   "version": "0.1.0",
-  "description": "Bridge between the T3 Code addon for World of Warcraft: Forever and a running T3 Code server. Early release, experimental.",
-  "homepage": "https://github.com/ryanrhughes/t3code-wow",
+  "description": "Herdr's spaces and agent tabs inside World of Warcraft: Forever. Experimental bridge with an optional T3 Code backend.",
+  "homepage": "https://github.com/CodyBontecou/t3code-wow",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ryanrhughes/t3code-wow.git",
+    "url": "git+https://github.com/CodyBontecou/t3code-wow.git",
     "directory": "bridge"
   },
   "bugs": {
-    "url": "https://github.com/ryanrhughes/t3code-wow/issues"
+    "url": "https://github.com/CodyBontecou/t3code-wow/issues"
   },
   "author": "Ryan Hughes",
   "type": "module",
   "private": true,
   "bin": {
+    "herdr-wow": "bin/t3code-wow.js",
     "t3code-wow": "bin/t3code-wow.js"
   },
   "engines": {

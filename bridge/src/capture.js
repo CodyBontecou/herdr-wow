@@ -8,6 +8,9 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+export const MAC_CAPTURE = fileURLToPath(new URL('../bin/mac-capture', import.meta.url));
 import { decodeImage, parsePPM, CELLS_PER_ROW, MAX_ROWS } from './codec.js';
 
 // A service may start before the session exports WAYLAND_DISPLAY; find the socket.
@@ -26,6 +29,7 @@ function run(cmd, args, { maxBuffer = 32 * 1024 * 1024, timeout = 4000 } = {}) {
     execFile(cmd, args, { encoding: 'buffer', maxBuffer, timeout, env: captureEnv() }, (err, stdout, stderr) => {
       if (err) {
         err.stderr = stderr?.toString();
+        if (err.stderr?.trim()) err.message = err.stderr.trim();
         reject(err);
       } else resolve(stdout);
     });
@@ -124,6 +128,7 @@ export class StripCapture {
 
   resolveBackend() {
     if (this.backend !== 'auto') return this.backend;
+    if (process.platform === 'darwin') return fs.existsSync(MAC_CAPTURE) ? 'macos' : 'none';
     if (process.env.WAYLAND_DISPLAY || hyprSocket()) {
       if (hyprSocket() && which('grim')) return 'hyprland';
       if (which('grim')) return 'grim';
@@ -142,7 +147,17 @@ export class StripCapture {
   async grab(wowPid) {
     const backend = this.resolveBackend();
     this.stats.captures++;
-    if (backend === 'none') throw new Error('no capture backend: install grim (Wayland/wlroots) or ImageMagick (X11)');
+    if (backend === 'none') throw new Error(process.platform === 'darwin' ? 'macOS capture helper missing: rerun ./install.sh (requires Xcode command-line tools)' : 'no capture backend: install grim (Wayland/wlroots) or ImageMagick (X11)');
+    if (backend === 'macos') {
+      if (!wowPid) return { status: 'no-window' };
+      try {
+        const buf = await run(MAC_CAPTURE, ['strip', String(wowPid)], { timeout: 8000 });
+        return { status: 'ok', image: parsePPM(buf) };
+      } catch (err) {
+        if (err.message === 'no-window') return { status: 'no-window' };
+        throw err;
+      }
+    }
     const px = StripCapture.stripPixels(4);
     if (backend === 'hyprland' || backend === 'grim') {
       let region = this.manualRegion;
@@ -180,6 +195,11 @@ export class StripCapture {
   async screenshot(wowPid) {
     const backend = this.resolveBackend();
     const name = `wow-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.jpg`;
+    if (backend === 'macos') {
+      if (!wowPid) throw new Error('WoW is not running');
+      const data = await run(MAC_CAPTURE, ['screenshot', String(wowPid)], { timeout: 8000 });
+      return { data, name, mime: 'image/jpeg' };
+    }
     if (backend === 'hyprland' || backend === 'grim') {
       const args = ['-t', 'jpeg', '-q', '85', '-s', '1'];
       if (backend === 'hyprland') {

@@ -10,6 +10,8 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { threadStatus } from './thread-state.js';
+export { threadStatus, isUnread } from './thread-state.js';
 
 export const PROTOCOL = 2;
 
@@ -22,26 +24,6 @@ export function readRuntime() {
   const runtime = JSON.parse(fs.readFileSync(file, 'utf8'));
   if (!runtime.origin) throw new Error(`no origin in ${file}`);
   return runtime;
-}
-
-const WORKING = new Set(['preparing', 'queued', 'starting', 'running', 'waiting']);
-
-// Collapse the server's thread fields into the handful the game needs.
-export function threadStatus(t) {
-  if (t.archivedAt || t.deletedAt) return 'archived';
-  if (t.pendingRuntimeRequest) return 'input';
-  if (t.activityRunStatus || WORKING.has(t.status)) return 'working';
-  // Settled wins over an unreviewed plan: settling is how you say you're done with it.
-  if (t.settledOverride === 'settled') return 'settled';
-  if (t.hasActionableProposedPlan) return 'plan';
-  if (t.status === 'failed' || t.lastError) return 'failed';
-  return 'open';
-}
-
-export function isUnread(t) {
-  const done = t.latestRunCompletedAt ? Date.parse(t.latestRunCompletedAt) : 0;
-  const seen = t.lastVisitedAt ? Date.parse(t.lastVisitedAt) : 0;
-  return done > seen;
 }
 
 export class T3Client extends EventEmitter {

@@ -70,7 +70,7 @@ local function InitMessage(frame, ed)
 	if m.r == "u" then
 		frame.Label:SetText(ns.Color("gold", ed.echo and "you  |cff9d9d9d(sending…)|r" or "you"))
 	else
-		frame.Label:SetText(ns.Color("agent", "agent") .. (m.live and ns.Color("grey", "  writing…") or ""))
+		frame.Label:SetText(ns.Color("agent", m.label or "agent") .. (m.live and ns.Color("grey", "  writing…") or ""))
 	end
 	frame.Body:SetWidth(T:BodyWidth())
 	frame.Body:SetText(m.t)
@@ -260,10 +260,23 @@ function T:SubmitAnswers(threadId, pending, customText)
 	return true
 end
 
+function T:TerminalAnswer(view, pending, kind, value)
+	if self.answered and self.answered[pending.id] then return false end
+	ns.Transport:Send("answer", view.id, pending.id, kind, value)
+	self.answered = self.answered or {}
+	self.answered[pending.id] = true
+	self:Refresh(true)
+end
+
 -- Called by the composer when a question is open and the player types an answer.
 function T:CustomAnswer(text)
 	local v = ns.Store:View()
 	local p = v and v.pending
+	if p and p.kind == "terminal-question" then
+		if not p.textInput or (self.answered and self.answered[p.id]) then return false end
+		self:TerminalAnswer(v, p, "text", text)
+		return true
+	end
 	if not p or p.kind ~= "question" then return false end
 	for _, q in ipairs(p.questions) do
 		if q.custom then return self:SubmitAnswers(v.id, p, text) end
@@ -275,19 +288,31 @@ function T:Elements()
 	local list = {}
 	local main = ns.Main
 	if main.mode == "new" then
+		local herdr = ns.Store.data.bridge.backend == "Herdr"
+		if herdr and not ns.Store:CanLaunchProject(main.newProject) then
+			table.insert(list, Note("No launch project is configured. Use herdr-wow project add on your desktop to allow a directory for new Pi sessions. You can still browse every Herdr space and tab.", "common-icon-forwardarrow"))
+			return list
+		end
+		local detail = herdr and ". Pi opens in a background Herdr tab for this project. It uses your normal Pi settings." or ". The agent runs on your computer with your T3 Code defaults."
 		table.insert(list, Note(ns.Color("gold", "Start a new thread") .. "\n\nPick the project above, describe the task in the box below and press "
-			.. ns.Color("white", "Start") .. ". The agent runs on your computer with your T3 Code defaults.", "common-icon-forwardarrow"))
+			.. ns.Color("white", "Start") .. detail, "common-icon-forwardarrow"))
 		return list
 	end
 	local id = ns.viewId
 	if not id then
 		local b = ns.Store.data.bridge or {}
-		local lines = { ns.Color("gold", "T3 Code") .. (b.host and ns.Color("grey", "  on " .. b.host) or "") }
+		local lines = { ns.Color("gold", ns.title) .. (b.host and b.host ~= ns.title and ns.Color("grey", "  on " .. b.host) or "") }
 		local active = ns.Store:Active()
 		if #active > 0 then
 			table.insert(lines, string.format("\n%d thread%s need%s you or %s working.", #active, #active == 1 and "" or "s", #active == 1 and "s" or "", #active == 1 and "is" or "are"))
 		end
-		table.insert(lines, "\nPick a thread on the left to read it and reply, or start a new one.")
+		if b.backend == "Herdr" then
+			local groups = ns.Store:Groups(ns.db.settings.project, ns.ThreadList.query)
+			local hasTabs = #groups.working + #groups.open + #groups.settled > 0
+			table.insert(lines, hasTabs and "\nChoose a tab above to read its output and reply." or (ns.ThreadList.query and ns.ThreadList.query ~= "" and "\nNo tabs match your search. Clear the search or choose another space." or "\nThis space has no tabs. Choose another space on the left, or start a new thread."))
+		else
+			table.insert(lines, "\nPick a thread on the left to read it and reply, or start a new one.")
+		end
 		if ns.Gamepad:IsActive() then
 			table.insert(lines, "\n" .. ns.Gamepad:HelpText())
 		end
@@ -305,8 +330,9 @@ function T:Elements()
 		table.insert(list, Note(ns.Color("grey", "Loading…"), "common-icon-undo", { spin = true }))
 		return list
 	end
+	if v.note then table.insert(list, Note(ns.Color("grey", v.note), "common-icon-forwardarrow")) end
 	if v.more then
-		table.insert(list, Note(ns.Color("grey", "Earlier messages are in T3 Code."), "common-icon-undo"))
+		table.insert(list, Note(ns.Color("grey", "Earlier messages are on your desktop."), "common-icon-undo"))
 	end
 	local echo = self.echo[id]
 	for _, m in ipairs(v.msgs or {}) do
@@ -352,6 +378,15 @@ function T:Elements()
 				table.insert(list, Option("Always allow this", Approve("acceptAlways"), "Don't ask again for this command."))
 			end
 			table.insert(list, Option("Decline", Approve("decline")))
+		elseif p.kind == "terminal-question" then
+			table.insert(list, Note(ns.Color("gold", "Answer in the terminal above. Each button sends one key; review the updated screen before the next action."), "common-icon-forwardarrow"))
+			for _, action in ipairs(p.actions or {}) do
+				local key = action.key
+				table.insert(list, Option(action.label, function() T:TerminalAnswer(v, p, "key", key) end))
+			end
+			if p.textInput then
+				table.insert(list, Note(ns.Color("grey", "Type a single-line answer below and press Send to enter it. Then review the terminal and select Submit."), "common-icon-forwardarrow"))
+			end
 		elseif p.kind == "question" then
 			local req = self.answers[p.id] or {}
 			local custom = false
@@ -387,7 +422,7 @@ function T:Elements()
 	end
 	if t and t.s == "working" then
 		table.insert(list, Note(ns.Color("agent", v.act or t.l or "Working"), "common-icon-undo", { spin = true, since = t.st, live = true }))
-	elseif t and (t.s == "open" or t.s == "failed") and ns.db.settings.quickReplies and not p then
+	elseif t and (t.s == "open" or t.s == "failed") and ns.Store:Can("send", t) and ns.db.settings.quickReplies and not p then
 		for _, text in ipairs(QUICK_REPLIES) do
 			table.insert(list, Option(text:gsub("%.$", ""), function() ns.Main:Send(text) end))
 		end

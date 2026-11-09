@@ -16,8 +16,9 @@ import { createHash } from 'node:crypto';
 import { RS, US } from './codec.js';
 import { StripCapture } from './capture.js';
 import { SlotBank } from './slots.js';
-import { threadStatus, isUnread } from './t3.js';
+import { threadStatus, isUnread } from './thread-state.js';
 import { Fleet } from './fleet.js';
+import { HerdrBackend } from './herdr.js';
 import { tokenProvider } from './auth.js';
 import { Voice } from './voice.js';
 import { OmarchyUsage, mergeUsage } from './usage.js';
@@ -69,6 +70,11 @@ function lastAssistantText(projection) {
 }
 
 export function pendingRequest(projection) {
+  if (projection?.terminalQuestion) {
+    const q = projection.terminalQuestion;
+    return { id: q.id, kind: 'terminal-question', textInput: q.textInput,
+      actions: q.actions.map((a) => ({ key: a.key, label: escapeWow(a.label) })) };
+  }
   const req = (projection?.runtimeRequests || []).find((r) => r.status === 'pending');
   if (!req) return null;
   const items = projection.turnItems || [];
@@ -189,7 +195,7 @@ export function friendlyError(message) {
   const text = String(message || 'failed');
   if (/Missing key|Expected .*(Literal|Struct|Union)|is unexpected|Unexpected key/.test(text)) {
     const field = /at \[\"?([^\]"]+)/.exec(text)?.[1];
-    return `T3 Code didn't accept that request${field ? ` (it wants "${field}")` : ''}. Update t3code-wow to match your T3 Code version.`;
+    return `T3 Code didn't accept that request${field ? ` (it wants "${field}")` : ''}. Update herdr-wow to match your T3 Code version.`;
   }
   return text.split('\n')[0].slice(0, 200);
 }
@@ -211,7 +217,11 @@ export class Bridge {
     this.capture = new StripCapture({ log: this.log, backend: config.capture?.backend || 'auto', region: config.capture?.region || null });
     this.tokens = tokenProvider({ log: this.log });
     // Every T3 Code machine we show: this one, plus any added with `t3code-wow env add`.
-    this.t3 = new Fleet({ localTokens: this.tokens, environments: config.environments || [], log: this.log });
+    if (config.backend && !['t3', 'herdr'].includes(config.backend)) throw new Error(`Unknown backend: ${config.backend}`);
+    this.t3 = config.backend === 'herdr'
+      ? new HerdrBackend({ config: config.herdr, log: this.log })
+      : new Fleet({ localTokens: this.tokens, environments: config.environments || [], log: this.log });
+    this.commandTail = Promise.resolve();
     this.voice = new Voice({ ttsCommand: config.tts?.command || null, rate: config.tts?.rate || 0, log: this.log });
     this.stateDir = stateDir;
     this.stateFile = path.join(stateDir, 'state.json');
@@ -257,7 +267,7 @@ export class Bridge {
   // ---------------------------------------------------------------------------
 
   async start() {
-    this.log(`t3code-wow bridge ${VERSION}; addons: ${this.addonsDir}; slots: ${this.bank.slots}`);
+    this.log(`herdr-wow bridge ${VERSION}; addons: ${this.addonsDir}; slots: ${this.bank.slots}`);
     try {
       this.bank.prepareBells();
     } catch (err) {
@@ -266,12 +276,17 @@ export class Bridge {
     const v = this.voice.describe();
     this.log(`speech: ${v.tts || 'none'}; dictation: ${v.dictation || 'none'}; capture: ${this.capture.resolveBackend()}`);
     this.t3.on('state', (s, e) => {
-      this.log(`T3: ${s}${e ? ` (${e})` : ''}`);
+      this.log(`${this.t3.label || 'T3'}: ${s}${e ? ` (${e})` : ''}`);
       this.markDirty('important');
     });
     this.t3.on('change', (ev) => this.onT3Change(ev));
     this.t3.on('config', () => this.markDirty('minor'));
     this.t3.start();
+    if (this.config.backend === 'herdr') {
+      this.viewTimer = setInterval(() => {
+        if (this.client?.view && this.client.flags.includes('o')) this.refreshView(this.client.view);
+      }, 2000);
+    }
     this.checkProcess();
     this.procTimer = setInterval(() => this.checkProcess(), 4000);
     this.statusTimer = setInterval(() => this.writeStatus(), 3000);
@@ -285,13 +300,14 @@ export class Bridge {
     clearInterval(this.procTimer);
     clearInterval(this.statusTimer);
     clearInterval(this.usageTimer);
+    clearInterval(this.viewTimer);
     clearTimeout(this.publishTimer);
     this.t3.stop();
     this.voice.hush();
   }
 
   checkProcess() {
-    const proc = findWowProcess();
+    const proc = findWowProcess(this.config.wowDir);
     const key = processKey(proc);
     const was = this.proc;
     this.proc = proc;
@@ -377,6 +393,7 @@ export class Bridge {
     if (c.flags !== hello.flags) {
       const wasQuiet = c.flags.includes('q');
       c.flags = hello.flags;
+      if (!c.flags.includes('r')) this.deferredAnnounce = null;
       this.markDirty('minor');
       // Out of combat / a quiet instance: read the held announcement now.
       if (wasQuiet && !c.flags.includes('q') && this.deferredAnnounce) {
@@ -406,7 +423,8 @@ export class Bridge {
     if (fresh.length) {
       this.persist.handled[c.session] = fresh.at(-1).id;
       this.saveState();
-      for (const cmd of fresh) this.runCommand(cmd);
+      // Preserve new/send ordering even when starting an agent takes seconds.
+      for (const cmd of fresh) this.commandTail = this.commandTail.then(() => this.runCommand(cmd)).catch((err) => this.log(`command failed: ${err.message}`));
     }
     if (c.ackedSeq !== frame.seq) this.schedulePublish();
   }
@@ -426,8 +444,11 @@ export class Bridge {
     let ok = true;
     let msg = null;
     try {
+      const capability = { shot: 'images', stop: 'stop', settle: 'settle', unsettle: 'settle', archive: 'archive', approve: 'approvals', answer: 'answers' }[cmd.verb];
+      if (capability && this.t3.capabilities?.[capability] === false) throw new Error(`${cmd.verb} is not supported by ${this.t3.label || 'this backend'} yet; use your desktop`);
       switch (cmd.verb) {
         case 'send': {
+          if (this.t3.threads.get(a0)?.capabilities?.send === false) throw new Error('This tab is read-only; use Herdr to interact with it');
           const attachments = await this.takeShots(a0, a0);
           await this.t3.sendMessage(a0, a1, a2 || 'auto', attachments);
           msg = attachments.length ? `Sent with ${attachments.length} screenshot${attachments.length === 1 ? '' : 's'}` : 'Sent';
@@ -466,6 +487,11 @@ export class Bridge {
         case 'archive':
           await this.t3.archive(a0);
           break;
+        case 'closeThread':
+          if (this.t3.capabilities?.closeThread !== true) throw new Error('Closing tabs is not supported by this backend; use your desktop');
+          await this.t3.closeThread(a0, a1);
+          msg = 'Herdr tab closed';
+          break;
         case 'read':
           await this.t3.visit(a0);
           ok = null; // silent
@@ -481,7 +507,11 @@ export class Bridge {
             if (answers[qid] === undefined) answers[qid] = value;
             else answers[qid] = [].concat(answers[qid], value);
           }
-          await this.t3.respondAnswers(a0, a1, answers);
+          try {
+            await this.t3.respondAnswers(a0, a1, answers);
+          } finally {
+            this.refreshView(a0, true);
+          }
           break;
         }
         case 'speak': {
@@ -572,7 +602,7 @@ export class Bridge {
   async speechFor(threadId, which) {
     const t = this.t3.threads.get(threadId);
     const proj = await this.projection(threadId);
-    let text = lastAssistantText(proj);
+    let text = proj?.terminalOutput || lastAssistantText(proj);
     if (which === 'plan') {
       text = proposedPlan(proj);
     } else if (which && which !== 'last') {
@@ -617,7 +647,7 @@ export class Bridge {
         // label alone ("Thinking" -> "Running ls") can wait for the slower pace.
         const msgs = p.messages || [];
         const last = msgs.at(-1);
-        v.contentKey = [msgs.length, last?.text?.length, last?.updatedAt, pendingRequest(p)?.id, proposedPlan(p)?.length, (p.runs || []).filter((r) => r.status === 'queued').length].join('|');
+        v.contentKey = [msgs.length, last?.text?.length, last?.updatedAt, p.terminalOutput, pendingRequest(p)?.id, proposedPlan(p)?.length, (p.runs || []).filter((r) => r.status === 'queued').length].join('|');
         if (threadId === this.client?.view) this.markDirty(v.contentKey !== prevContent ? 'view' : 'minor');
         else if (activityLabel(p) !== prevLabel) this.markDirty('minor');
       })
@@ -645,7 +675,7 @@ export class Bridge {
       const before = ev.prev ? threadStatus(ev.prev) : this.prevStatus.get(t.id);
       this.prevStatus.set(t.id, status);
       if (t.id === this.client?.view) this.refreshView(t.id);
-      else if (ACTIVE.has(status)) this.refreshView(t.id);
+      else if (ACTIVE.has(status) && this.config.backend !== 'herdr') this.refreshView(t.id);
       if (before !== status) {
         this.markDirty('important');
         if (before === 'working' && status !== 'working') this.announce(t, status);
@@ -657,7 +687,7 @@ export class Bridge {
       if (ev.kind === 'snapshot') {
         for (const t of this.t3.threads.values()) {
           this.prevStatus.set(t.id, threadStatus(t));
-          if (ACTIVE.has(threadStatus(t))) this.refreshView(t.id);
+          if (ACTIVE.has(threadStatus(t)) && this.config.backend !== 'herdr') this.refreshView(t.id);
         }
       }
       this.markDirty('important');
@@ -672,13 +702,18 @@ export class Bridge {
       return;
     }
     try {
+      const proj = await this.projection(thread.id);
+      // The player may disable notifications or enter combat during the fetch.
+      if (!this.client?.flags.includes('r')) return;
+      if (this.client.flags.includes('q')) {
+        this.deferredAnnounce = { thread, status };
+        return;
+      }
       if (status === 'input') {
-        const proj = await this.projection(thread.id);
         const p = pendingRequest(proj);
         const q = p?.kind === 'question' ? p.questions[0]?.q : p?.what;
         this.voice.speak(`${thread.title} needs your input. ${q ? markdownToSpeech(q.replace(/\|\|/g, '|')) : ''}`);
       } else {
-        const proj = await this.projection(thread.id);
         const text = lastAssistantText(proj);
         this.voice.speak(`${thread.title} ${status === 'failed' ? 'failed' : 'finished'}. ${text ? markdownToSpeech(text, { maxChars: 600 }) : ''}`);
       }
@@ -703,13 +738,15 @@ export class Bridge {
       .filter(({ s }) => s !== 'archived');
     threads.sort((a, b) => ORDER[a.s] - ORDER[b.s] || Date.parse(b.t.updatedAt) - Date.parse(a.t.updatedAt));
     let settled = 0;
-    threads = threads.filter(({ s }) => s !== 'settled' || ++settled <= 30).slice(0, 90);
+    threads = threads.filter(({ s }) => s !== 'settled' || ++settled <= 30);
+    if (!t3.showAllTabs) threads = threads.slice(0, 90);
     const list = threads.map(({ t, s }) => {
       usedProjects.add(t.projectId);
       const v = this.views.get(t.id);
       const proj = v?.projection;
       let label;
-      if (s === 'working') label = activityLabel(proj) || (t.status === 'queued' ? 'Queued' : 'Working');
+      if (t.statusLabel) label = t.statusLabel;
+      else if (s === 'working') label = activityLabel(proj) || (t.status === 'queued' ? 'Queued' : 'Working');
       else if (s === 'input') label = t.pendingRuntimeRequest?.kind === 'user_input' ? 'Needs your answer' : 'Needs your approval';
       else if (s === 'plan') label = 'Plan ready';
       else if (s === 'failed') label = t.lastError ? `Failed: ${String(t.lastError).slice(0, 60)}` : 'Failed';
@@ -718,6 +755,9 @@ export class Bridge {
       const last = proj ? lastAssistantText(proj) : t.latestVisibleMessage?.role === 'assistant' ? t.latestVisibleMessage.text : null;
       return {
         id: t.id,
+        caps: t.capabilities,
+        closeTabId: t.closeTabId,
+        kind: t.kind,
         title: escapeWow(t.title || 'Untitled'),
         p: t.projectId,
         s,
@@ -741,7 +781,10 @@ export class Bridge {
         id: p.id,
         name: escapeWow(remote ? `${name} · ${remote}` : name),
         env: remote ? escapeWow(remote) : undefined,
-        act: usedProjects.has(p.id) || undefined,
+        browse: p.browse,
+        launch: p.launch,
+        filterId: p.filterId,
+        act: usedProjects.has(p.id) || p.browse || undefined,
       });
     }
     projects.sort((a, b) => (b.act ? 1 : 0) - (a.act ? 1 : 0) || a.name.localeCompare(b.name));
@@ -763,8 +806,12 @@ export class Bridge {
           if (budget < 0 && out.length > 0) break;
           out.unshift({ r: m.role === 'user' ? 'u' : 'a', t: text, at: sec(m.createdAt), live: m.streaming || undefined, n: i + 1 });
         }
+        if (typeof p.terminalOutput === 'string' && p.terminalOutput.length > 0) {
+          out.push({ r: 'a', label: 'terminal', t: escapeWow(p.terminalOutput.slice(-16000)), n: 1 });
+        }
         view = {
           id: viewId,
+          note: p.note ? escapeWow(p.note) : undefined,
           msgs: out,
           more: msgs.length > out.length || undefined,
           pending: pendingRequest(p) || undefined,
@@ -790,6 +837,8 @@ export class Bridge {
     return {
       bridge: {
         version: VERSION,
+        backend: t3.label || 'T3 Code',
+        caps: t3.capabilities,
         t3: t3.state,
         t3err: t3.error ? escapeWow(t3.error) : undefined,
         server: t3.config?.environment?.serverVersion,
@@ -963,6 +1012,7 @@ export class Bridge {
       version: VERSION,
       pid: process.pid,
       at: new Date().toISOString(),
+      backend: this.t3.label || 'T3 Code',
       t3: { state: this.t3.state, error: this.t3.error, threads: this.t3.threads.size, origin: this.t3.origin, environments: this.t3.environments() },
       wow: this.proc ? { pid: this.proc.pid } : null,
       capture: { state: this.captureState, backend: this.capture.resolveBackend(), ...this.capture.stats, lastError: this.capture.lastError },

@@ -5,6 +5,21 @@
 	<Binding name="T3CODE_NEW" category="ADDONS">
 		T3Code_Binding("new")
 	</Binding>
+	<Binding name="T3CODE_NEXT_WORKSPACE" category="ADDONS">
+		T3Code_Binding("nextWorkspace")
+	</Binding>
+	<Binding name="T3CODE_PREVIOUS_WORKSPACE" category="ADDONS">
+		T3Code_Binding("previousWorkspace")
+	</Binding>
+	<Binding name="T3CODE_CLOSE_THREAD" category="ADDONS">
+		T3Code_Binding("closeThread")
+	</Binding>
+	<Binding name="T3CODE_NEXT_THREAD" category="ADDONS">
+		T3Code_Binding("nextThread")
+	</Binding>
+	<Binding name="T3CODE_PREVIOUS_THREAD" category="ADDONS">
+		T3Code_Binding("previousThread")
+	</Binding>
 	<Binding name="T3CODE_TALK" runOnUp="true" category="ADDONS">
 		T3Code_Binding("talk", keystate)
 	</Binding>

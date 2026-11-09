@@ -1,6 +1,6 @@
 -- Controller support.
 --
--- While the T3 Code window is open in Forever's gamepad UI, the window takes the
+-- While the Herdr window is open in Forever's gamepad UI, the window takes the
 -- controller for itself (EnableGamePadButton/EnableGamePadStick, the same way other
 -- Forever addons drive their own windows), so nothing reaches your character:
 --   D-pad / left stick  move the gamepad cursor between controls
@@ -72,8 +72,14 @@ function G:Candidates()
 			add(ns.ThreadList.dropdown)
 			local box = ns.ThreadList.scrollBox
 			box:ForEachFrame(function(frame, ed)
-				if (ed.thread or ed.header) and InsideBox(frame, box) then add(frame, box, ed) end
+				if (ed.thread or ed.header or ed.space) and InsideBox(frame, box) then add(frame, box, ed) end
 			end)
+		end
+		local tabs = ns.ThreadList.tabs
+		if tabs and tabs:IsShown() then
+			add(tabs.Previous)
+			for _, button in ipairs(tabs.buttons) do add(button) end
+			add(tabs.Next)
 		end
 		local header = page.Right.Header
 		add(header.Action)
@@ -640,7 +646,7 @@ function G:HelpText()
 	local chord = ns.Launcher and ns.Launcher.chordText
 	return string.format("%s select  ·  %s back  ·  %s hold to talk  ·  %s read aloud  ·  %s%s tabs%s",
 		UI.Glyph("PAD1"), UI.Glyph("PAD2"), UI.Glyph("PAD4"), UI.Glyph("PAD3"), Bumper("PADLSHOULDER"), Bumper("PADRSHOULDER"),
-		chord and ("\nOpen or close T3 Code anywhere: hold " .. ns.Launcher.KeyText("PADLTRIGGER") .. " + " .. ns.Launcher.KeyText("PADRTRIGGER") .. " and press " .. ns.Launcher.KeyText("PADBACK") .. ".") or "\nOpen T3 Code any time from the minimap button or the game menu.")
+		chord and ("\nOpen or close Herdr anywhere: hold " .. ns.Launcher.KeyText("PADLTRIGGER") .. " + " .. ns.Launcher.KeyText("PADRTRIGGER") .. " and press " .. ns.Launcher.KeyText("PADBACK") .. ".") or "\nOpen Herdr any time from the minimap button or the game menu.")
 end
 
 
@@ -745,7 +751,7 @@ end
 -- In Forever's controller mode the triggers are the action-bar modifiers, Back is the
 -- game's "focus interface" button, and the keybinding screen can't record controller
 -- chords, so a key binding can't do this. Instead we read the controller's state each
--- frame and open T3 Code when Back goes down while both triggers are held.
+-- frame and open Herdr when Back goes down while both triggers are held.
 --
 -- We never take controller input outside our own window: an addon frame that
 -- receives gamepad buttons breaks the LT + RT action bars (face buttons and D-pad),
@@ -806,7 +812,7 @@ function L:SetupChord()
 	self.chordText = self.enabled and L.KeyText(self.chord) or nil
 end
 
--- Inside the T3 Code window (which has the controller to itself), the same chord
+-- Inside the Herdr window (which has the controller to itself), the same chord
 -- closes it. Gamepad.lua's window handler asks this.
 function L.ChordHeld()
 	local held = ReadButtons()
@@ -819,7 +825,7 @@ function L:HookGameMenu()
 	hooksecurefunc(GameMenuFrame, "InitButtons", function(menu)
 		if ns.db.settings.gameMenu == false then return end
 		local ok, err = pcall(function()
-			local button = menu:AddButton("T3 Code", function()
+			local button = menu:AddButton(ns.title, function()
 				PlaySound(SOUNDKIT.IG_MAINMENU_OPTION)
 				HideUIPanel(menu)
 				L:Open()
@@ -843,7 +849,7 @@ ns:On("Login", function()
 	L:SetupChord()
 	if L.chordText and ns.Gamepad:IsActive() and not ns.db.chordAnnounced then
 		ns.db.chordAnnounced = L.chord
-		ns.Print("Open T3 Code from your controller: hold " .. L.KeyText("PADLTRIGGER") .. " + " .. L.KeyText("PADRTRIGGER") .. " and press " .. L.KeyText("PADBACK") .. ". It's also in the game menu.")
+		ns.Print("Open Herdr from your controller: hold " .. L.KeyText("PADLTRIGGER") .. " + " .. L.KeyText("PADRTRIGGER") .. " and press " .. L.KeyText("PADBACK") .. ". It's also in the game menu.")
 	end
 end)
 

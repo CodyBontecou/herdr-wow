@@ -1,10 +1,12 @@
--- T3 Code for World of Warcraft: Forever.
+-- Herdr for World of Warcraft: Forever.
 -- Namespace, saved settings, small helpers and an internal event bus.
 
 local addonName, ns = ...
 T3Code = ns
 
 ns.name = addonName
+-- Preserve installed folder, SavedVariables and binding IDs across the rebrand.
+ns.title = "Herdr"
 ns.version = C_AddOns.GetAddOnMetadata(addonName, "Version") or "dev"
 ns.media = "Interface\\AddOns\\" .. addonName .. "\\Media\\"
 
@@ -33,7 +35,7 @@ function ns:On(event, fn)
 	table.insert(listeners[event], fn)
 end
 
--- Forever hides Lua errors by default, so keep our own: shown by /t3 errors and the
+-- Forever hides Lua errors by default, so keep our own: shown by /herdr errors and the
 -- Settings tab, and saved with the addon's data (readable after /reload).
 ns.errors = {}
 
@@ -51,7 +53,7 @@ function ns.RecordError(err)
 	if not ns.errorNotified then
 		ns.errorNotified = true
 		if DEFAULT_CHAT_FRAME then
-			DEFAULT_CHAT_FRAME:AddMessage("|cffffd100T3 Code|r: |cffff4040something went wrong|r — type /t3 errors for details.")
+			DEFAULT_CHAT_FRAME:AddMessage("|cffffd100" .. ns.title .. "|r: |cffff4040something went wrong|r — type /herdr errors for details.")
 		end
 	end
 end
@@ -85,6 +87,7 @@ end
 local DEFAULTS = {
 	settings = {
 		tracker = true,
+		notifications = true,
 		toasts = true,
 		sounds = true,
 		tts = "auto", -- auto | game | system | off
@@ -99,6 +102,8 @@ local DEFAULTS = {
 		minimapButton = true,
 		dictateSend = false,
 		quietInstances = true,
+		openAfterFishingCast = false,
+		fullscreen = false,
 		windowScale = "auto",
 		padChord = "auto",
 	},
@@ -161,14 +166,14 @@ end
 
 function ns.Print(...)
 	local msg = strjoin(" ", tostringall(...))
-	DEFAULT_CHAT_FRAME:AddMessage(ns.Color("gold", "T3 Code") .. ": " .. msg)
+	DEFAULT_CHAT_FRAME:AddMessage(ns.Color("gold", ns.title) .. ": " .. msg)
 end
 
 function ns.InCombat()
 	return InCombatLockdown() or false
 end
 
--- The player just used the T3 Code window (see Transport: "attending").
+-- The player just used the Herdr window (see Transport: "attending").
 function ns.Interacted()
 	ns.lastInteraction = GetTime()
 end

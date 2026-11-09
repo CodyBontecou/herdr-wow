@@ -1,4 +1,4 @@
--- Minimap button: click to open or close T3 Code, right-click for settings, drag it
+-- Minimap button: click to open or close Herdr, right-click for settings, drag it
 -- around the minimap's edge. Built from the same border and highlight textures as
 -- Blizzard's own minimap buttons. A badge shows when a thread needs you.
 
@@ -98,7 +98,7 @@ function B:Create()
 end
 
 function B:Tooltip(tip)
-	tip:SetText("T3 Code", 1, 0.82, 0)
+	tip:SetText(ns.title, 1, 0.82, 0)
 	local working, waiting = 0, 0
 	for _, t in ipairs(ns.Store:Active()) do
 		if t.s == "working" then working = working + 1 else waiting = waiting + 1 end

@@ -1,4 +1,4 @@
--- The link to the t3code-wow bridge.
+-- The link to the Herdr bridge (legacy transport identifiers are preserved).
 --
 -- Addons can't open sockets or read files, so this uses three things the client
 -- does allow (measured on live Forever clients; see docs/ARCHITECTURE.md):
@@ -65,7 +65,7 @@ local function SetKeys(hex)
 		-- only sees new files after a restart.
 		if not T.needsRestart then
 			T.needsRestart = true
-			ns.Print("T3 Code was updated with new files. Quit and restart the game (a /reload isn't enough) to finish.")
+			ns.Print("Herdr was updated with new files. Quit and restart the game (a /reload isn't enough) to finish.")
 		end
 		return false
 	end
@@ -304,7 +304,7 @@ function T:Flags()
 	if ns.windowOpen then f = f .. "o" end
 	if s.tracker then f = f .. "t" end
 	if ns.Gamepad and ns.Gamepad:IsActive() then f = f .. "g" end
-	if s.autoRead and ns.SpeechEngine and ns.SpeechEngine() == "system" then f = f .. "r" end
+	if s.notifications ~= false and s.autoRead and ns.SpeechEngine and ns.SpeechEngine() == "system" then f = f .. "r" end
 	if self.signals ~= "ok" then f = f .. "s" end
 	if ns.IsQuiet() then f = f .. "q" end
 	if self.attending then f = f .. "a" end

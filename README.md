@@ -1,99 +1,94 @@
-# T3 Code for World of Warcraft
+# Herdr for World of Warcraft
 
-Watch and run your [T3 Code](https://t3.codes) agent threads without leaving the game. It's a native addon for World of Warcraft: Forever, built from Blizzard's own UI templates so it looks and plays like the rest of the interface, plus a small bridge that connects it to T3 Code.
+An unofficial [Herdr](https://herdr.dev) interface inside World of Warcraft: Forever. Browse your spaces and tabs, read agent output, reply to idle agents, and start Pi sessions without leaving the game.
 
-> [!WARNING]
-> **Early release, still experimental.** It's built for and tested on one setup: **Omarchy 4.5.0**, **T3 Code Nightly** (0.1.7-nightly) and **World of Warcraft: Forever** (1.60.x) under Proton. Other setups may work but aren't supported yet. T3 Code Nightly's API changes often, so a T3 update can break things until this catches up. Expect rough edges, and please [report them](https://github.com/ryanrhughes/t3code-wow/issues).
+**Experimental.** This fork adds native macOS capture and Herdr support to [Ryan Hughes's T3 Code addon](https://github.com/ryanrhughes/t3code-wow). The original Linux/T3 backend remains available. Native macOS transport has been exercised in game, but not every client version, sound setting, display setup or controller combination has been verified.
 
-## What it does
+## What works
 
-- **T3 Code window** (`/t3`): your threads grouped into Working, Open and Settled, filtered by project or machine. Read a thread, reply, queue follow-ups, stop a run, settle or reopen it, start new threads, answer the agent's questions and approve its requests.
-- **Quest tracker**: what's running, what needs you and what just finished, right under your quests, with live timers.
-- **Notices**: a toast, a sound and a chat line when a thread finishes or needs you. They wait until combat ends, and stay quiet in dungeons and raids if you like.
-- **Full controller support**: the D-pad moves between controls, A selects, B goes back, LB/RB switch tabs, X reads aloud and holding Y dictates. Hold both triggers and press Back to open it from anywhere.
-- **Voice**: dictate replies with Omarchy's dictation, and have replies read aloud by your desktop voice or the game's.
-- **Screenshots**: attach what's on your screen to a message so the agent can see your game.
-- **Every machine**: threads from your other computers via T3 Connect, all in one list.
-- **Usage**: your providers' plans and limits, the same as Omarchy's Agents panel shows.
-- A minimap button and a game-menu entry, for opening it without a keyboard.
+- **Spaces and tabs:** `/herdr` opens all spaces in the selected Herdr session. Filter by space, select a tab, or inspect individual panes in split tabs. Empty spaces remain visible.
+- **Agent replies:** read terminal output and send prompts to idle Pi, Codex and Claude Code sessions. Shell tabs and other agent kinds are read-only.
+- **New Pi sessions:** choose New Thread, select an allowlisted project, and start Pi in a background Herdr tab. The same session remains accessible on your desktop.
+- **Tracker and notifications:** see work in progress and completion notices. Click a popup's × to dismiss it. `/herdr notifications off` disables automatic popups, sounds, chat notices and read-aloud; `on` enables them again. Individual preferences are in Settings.
+- **Controller navigation:** hold both triggers and press Back/View to open the window. The window captures controller input only while open and releases it before combat lockdown.
+- **Optional voice:** manual and automatic read-aloud use available game voices or a configured desktop speech backend. Dictation still needs a supported desktop backend.
+
+Herdr transcripts currently contain terminal output, not full structured chat history. Empty viewport padding and a recognized Pi usage footer are removed. Recognized Codex and Claude Code questions have in-game terminal navigation, text-entry and submit controls. Unrecognized layouts, approvals, stop, busy follow-ups/steering, screenshots and archiving still require the desktop. See [the setup and limitations guide](docs/HERDR.md).
 
 ## Requirements
 
-- **Omarchy 4.5.0** (Hyprland). The bridge reads the game window with Hyprland's screen capture, and dictation and usage come from Omarchy's own tools.
-- **T3 Code Nightly**, installed and running. Its `t3` command gives the bridge a login.
-- **World of Warcraft: Forever**, installed with Omarchy's Battle.net (Proton).
-- **Node.js 22** or newer.
-- **Game sound on.** The addon learns about new updates through silent sounds; with sound off it falls back to slower polling.
+- World of Warcraft: **Forever** (1.60.x), not Retail or Classic.
+- Node.js **22 or newer**.
+- A running Herdr session with its CLI on PATH; tested with **Herdr 0.8.0**.
+- Pi on PATH if you want to start new Pi sessions.
+- On macOS: **macOS 14+**, Xcode command-line tools and Screen Recording permission for the capture helper/terminal.
+- On Linux: the existing Hyprland/`grim` or X11/ImageMagick capture backend. The original supported setup was Omarchy 4.5.0 with Forever under Proton.
+- Game sound enabled for fast update bells. With sound disabled, the addon falls back to slower slot polling.
 
-## Install
+T3 Code is **not required** for Herdr. To use the optional original backend instead, select `--backend t3`; it needs a compatible running T3 Code Nightly and its scoped login. That private API changes between releases.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/ryanrhughes/t3code-wow/main/install.sh | bash
-```
-
-Run the same command again to update. It finds World of Warcraft: Forever in Omarchy's Battle.net, or wherever Battle.net installed it (for anything unusual, add `bash -s -- --wow "/path/to/World of Warcraft"`). It installs the addon into the game, gives the bridge a T3 Code session limited to reading and running threads, and starts the bridge as the `t3code-wow` user service.
-
-Then it tells you what to do in the game and waits until the game checks in. The first time, **fully quit and restart World of Warcraft**: the game only finds new addon folders when it starts. After that, updates only need a `/reload`.
-
-To install from a clone instead, run `./install.sh` in it.
-
-### Uninstall
+## Install from this checkout
 
 ```bash
-t3code-wow uninstall
+./install.sh --backend herdr --no-service
+~/.local/bin/herdr-wow run
 ```
 
-This removes the addon and its update folders, its settings in the game, the bridge service, the bridge's T3 Code sessions (here and on any machine you added) and its files.
+Leave the bridge terminal running. The macOS installer compiles its capture helper; Linux can optionally use the existing user service instead of `--no-service`.
 
-## Using it
+On the first installation, **quit and restart WoW completely**, then log in. New slot addons and sounds are indexed at launch. Later code updates usually need `/reload` after rerunning `./install.sh` from the checkout. A nonstandard installation can be selected with `--wow "/path/to/World of Warcraft/_forever_"`.
 
-- `/t3` opens or closes the window. You can also use the minimap button, the game menu (Esc), or hold both triggers and press Back on a controller.
-- `/t3 new` starts a thread, `/t3 usage` opens the usage tab, `/t3 settings` the settings.
-- `/t3 unlock` lets you drag the tracker section somewhere else; Settings → Reset tracker puts it back under your quests.
-- To see threads from another machine on your tailnet, run `t3code-wow env add <host>`. It finds the machine's T3 Code over Tailscale and creates a session for the bridge over SSH.
-
-## Commands
+All existing spaces/tabs are discoverable without configuring launch directories. To allow new Pi sessions, use an actual workspace ID returned by `herdr workspace list`:
 
 ```bash
-t3code-wow status         # what the bridge sees: T3 Code, the game, the screen link, the addon
-t3code-wow status --log   # the same, with recent log lines
-t3code-wow env            # other machines shown in game (add <host> / remove <name>)
-t3code-wow uninstall      # remove everything (see above)
+herdr-wow project add my-project \
+  --cwd /absolute/project/directory \
+  --workspace WORKSPACE_ID \
+  --name 'My project · Pi' \
+  --session default
 ```
 
-## When something's wrong
+Restart the bridge after changing its configuration. The directory and workspace are trusted desktop configuration, never arbitrary paths supplied from the game. Detailed permissions, setup, named-session selection and troubleshooting are in [docs/HERDR.md](docs/HERDR.md). If `herdr-wow` is not on PATH, use `~/.local/bin/herdr-wow`.
 
-1. Run `t3code-wow status --log` and check each line.
-2. In game, run `/t3 selftest`. It checks each step between the game and T3 Code and says which one fails.
-3. `/t3 report` fills the T3 Code message box with diagnostics and attaches a screenshot of your game. Send it to an agent, or copy the text into an issue.
+## In game
 
-If the tracker says live updates are paused, do a `/reload`: the game allows a fixed number of updates per session (1,200 by default), which normally lasts many hours.
+- `/herdr`: open or close the window. The minimap button, game-menu entry and controller shortcut do the same.
+- `/herdr new`: start a Pi session in a configured project.
+- `/herdr settings`: notification, tracker, voice and display preferences.
+- `/herdr notifications on` / `/herdr notifications off`: enable or disable automatic notifications.
+- `/herdr unlock`: drag the small tracker by its header; `/herdr lock` locks it again.
+- `/herdr selftest`: check the game/bridge link.
+- `/herdr errors`: inspect recorded addon errors.
+
+Keyboard shortcuts can be assigned in **Options → Keybindings → Herdr**. Existing keyboard bindings are preserved. The legacy `/t3` and `/t3code` commands still work.
+
+## Bridge commands
+
+```bash
+herdr-wow status --log      # backend, game, capture and addon diagnostics
+herdr-wow probe             # capture/decode the strip corner
+herdr-wow sync              # re-copy the installed addon, not checkout edits
+herdr-wow uninstall        # remove this addon/bridge, not Herdr's tabs or chats
+```
+
+The `t3code-wow` CLI alias remains available. `herdr` itself is still the desktop terminal manager; this bridge does not replace that executable.
+
+## Compatibility and the rebrand
+
+The visible title, game menu, chat notices, keybinding labels and icons are now **Herdr**. Fresh installations select Herdr by default; existing backend configurations are retained.
+
+To preserve saved settings, keybindings, encryption keys and the measured transport, internal identifiers stay unchanged: `T3Code/`, `T3CodeDB`, `T3CODE_*`, `T3Code_S###`, the slot TOC/XML bytes and the existing `t3code-wow` config/state/data/service paths. Do not delete or rename those slot folders. The main addon's title is Herdr; generated slots retain their legacy metadata because changing it changes addon-manager fingerprints. Updated icon textures may require a full client restart if WoW keeps the old textures cached.
 
 ## How it works
 
-Addons can't open network connections or read files, so the addon and the bridge talk through what the game does allow:
+Addons cannot open sockets or read arbitrary files. Commands leave the game as an authenticated, encrypted strip of pixels. A desktop bridge captures that strip, talks to Herdr, and writes safely serialized snapshots into preinstalled load-on-demand slot addons. Rotating silent sounds signal new data. The bridge does not read game memory or inject game input.
 
-| Direction | How |
-| --- | --- |
-| Game → bridge | A small strip of coloured squares in the top-left corner for about a second after you do something. The bridge reads it with a screen capture. |
-| Bridge → game | Load-on-demand "slot" addons. The game reads a slot's Lua from disk when it loads, so the bridge writes a fresh snapshot there first. |
-| "New data" signal | Large silent sound files the bridge fills or empties. The game re-reads big sounds every time it plays them, so the addon knows when to load the next slot. |
+The encryption, bell positions, slot pacing and controller/combat boundaries are deliberately retained from the original addon. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and the initial [portability audit](docs/PORTABILITY-AUDIT.md).
 
-The bridge talks to T3 Code over the same WebSocket API its apps use. Details, measurements and design decisions are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+## Development and credits
 
-- **The strip is encrypted.** Streams and recordings show it, so every frame is encrypted and authenticated (ChaCha20 and HMAC-SHA-256) with a key only the bridge and your addon have. To anyone else it's noise, and the bridge ignores anything it can't authenticate.
-- **Addon managers.** WowUp shows a single "T3 Code" entry. Leave the `T3Code_S###` folders alone: the addon needs them.
-- **Nothing else.** The addon never sends anything to Blizzard. The bridge doesn't read game memory or press keys for you; it reads pixels and writes files in the addon folder.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before making changes. Coding agents should also read [AGENTS.md](AGENTS.md). Bridge tests run with `cd bridge && npm test`; addon changes need Lua 5.1/LuaJIT smoke checks and in-game verification.
 
-## Contributing
+This fork builds on [Ryan Hughes's T3 Code for WoW](https://github.com/ryanrhughes/t3code-wow), and the client measurements from [wow-ai](https://github.com/chelinho139/wow-ai) and [wow-forever-codex](https://github.com/0xinuarashi/wow-forever-codex). The original project's credits also acknowledge Bellular's suggestion to use a native addon rather than an overlay.
 
-Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening an issue or pull request. Coding agents should start with [AGENTS.md](AGENTS.md).
-
-## Credits
-
-- [wow-ai](https://github.com/chelinho139/wow-ai) and [wow-forever-codex](https://github.com/0xinuarashi/wow-forever-codex) measured how the Forever client loads files, plays sounds and handles the gamepad. The strip-and-slot approach builds on their work.
-- [Bellular](https://www.youtube.com/@BellularGaming) ([@BellularGaming](https://x.com/BellularGaming)) gave the idea of making this an in-game addon instead of a desktop overlay.
-
-## License
-
-[MIT](LICENSE). This is a fan project, not affiliated with or endorsed by Blizzard Entertainment. World of Warcraft is a trademark of Blizzard Entertainment. Use it at your own discretion.
+Addon and bridge code retain the original [MIT license](LICENSE). The Herdr logo and its resized texture conversions are covered by Apache 2.0; [artwork attribution and license](addon/T3Code/Media/ATTRIBUTION.md) are included with the addon. This is a fan integration, not affiliated with or endorsed by Blizzard or the Herdr project. Use it at your own discretion.

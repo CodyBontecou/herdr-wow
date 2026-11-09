@@ -12,6 +12,10 @@
                                               └────────────────────────────────────────┘
 ```
 
+## Display brand and compatibility
+
+The visible addon is **Herdr**, with `/herdr` and the `herdr-wow` CLI. `/t3`, `/t3code` and `t3code-wow` remain aliases. Internal folder/global names (`T3Code`, `T3CodeDB`, `T3Code_S###`), binding IDs, existing config/state/data/service paths and slot TOC/XML bytes deliberately remain unchanged. Existing keys, preferences, bindings and the addon-manager fingerprint layout therefore do not require a migration. T3 Code references in the backend/API sections below refer to the optional original backend, not the display brand.
+
 ## Constraints this is built around
 
 Measured on live Forever 1.60.1 clients (TOC 16001) by
@@ -90,6 +94,7 @@ C  id  verb  args…                      (one per queued command)
 - Verbs:
   - `send`, `new`, `stop`
   - `settle`, `unsettle`, `archive`, `read`
+  - `closeThread` (Herdr only; thread ID and confirmed tab ID)
   - `approve`, `answer`
   - `speak`, `say`, `hush`, `dictate`
   - `ping`
@@ -182,6 +187,22 @@ When few slots remain, intervals stretch 2–4×. When they run out, the addon o
 - **Writes:** `orchestration.dispatchCommand` with `message.dispatch`, `run.interrupt`,
   `runtime-request.respond`, `thread.settle`, `thread.unsettle` and `thread.visit`;
   plus `orchestration.launchThread`.
+
+## Optional Herdr backend and native macOS capture
+
+With `backend: "herdr"`, `herdr.js` replaces the T3 fleet. Configured project IDs map to allowlisted canonical directories and existing Herdr workspaces in one selected Herdr session. New threads create unfocused tabs, start Pi, then submit the initial prompt. Discovery reads one Herdr topology snapshot for all spaces, tabs, panes and agent kinds in the selected session. Spaces become browse filters; tabs become rows, with separate numbered rows for split panes. Empty spaces remain visible. Launch projects are separate, so discovery never authorizes new working directories. Ordinary terminals and unsupported agent kinds are read-only; idle Pi/Codex/Claude Code agents may receive prompts through Herdr. Only the viewed tab's terminal output is fetched. Thread display state is shared through `thread-state.js`; terminal output is a separate projection field, not fabricated T3 tool/run history. The bridge retains its compact snapshot format, including the legacy `bridge.t3` connection field for compatibility, and adds backend/capability metadata.
+
+Herdr tab closing uses the opt-in `closeThread` capability and a confirmation dialog that warns about terminating every pane and process in a split tab. The command carries the confirmed tab ID as well as the thread ID; the bridge rechecks the live terminal/session identity and tab membership before calling `herdr tab close` in the configured session. This check and close are not atomic, so concurrent desktop changes can still race the operation. An uncertain close is never automatically retried by the adapter. Closing is distinct from archiving or interrupting and is not enabled for the T3 backend.
+
+Herdr does not currently supply structured transcripts, questions, approvals, images, steering or in-game interruption through this adapter. For narrowly recognized Codex and Claude Code question screens, the bridge projects explicit terminal key controls as `terminal-question` pending data, not fabricated T3 runtime requests. Answers carry either one allowlisted key or single-line text, are tied to a single-use screen ID, and recheck terminal/session identity and the exact visible screen before writing. Text entry never appends Enter. Opening Codex's collapsed queue checks the opener and question count rather than unrelated animated output; it cannot submit an answer. Unknown layouts and approvals stay desktop-only. These are non-atomic terminal controls; another desktop user or the agent can still change the screen between the check and the write. Addon controls and bridge dispatch reject unsupported operations. Terminal reads are escaped and explicitly labeled as recent terminal output. Commands execute serially so an asynchronous launch cannot be overtaken by a later command. The original authenticated strip, slots, manifest bytes, bell sequence and pacing are unchanged.
+
+On macOS, `wow.js` discovers native Forever installations and identifies the selected process through `ps` with a start-time identity. Installation builds `bridge/native/mac-capture.swift` with Xcode tools. The ScreenCaptureKit helper captures lossless sRGB pixels for the strip and JPEG for screenshots, subject to Screen Recording permission. The bridge runs in the foreground on macOS; Linux retains its systemd installation. See [HERDR.md](HERDR.md) for setup and limitations. Native game transport behavior must still be verified in game; Wine measurements above are not automatically macOS guarantees.
+
+## Notification controls
+
+The saved `notifications` master preference gates popups, notice sounds, chat transition notices and automatic read-aloud. Turning it off hides active notices, cancels their timers and clears the addon's combat queue; individual popup/sound/read-aloud preferences remain unchanged. Every popup has a child close button that dismisses only that notice, while its body still opens the associated thread. Closing a notice reflows the stack.
+
+The existing `r` flag is only sent while notifications and desktop automatic read-aloud are enabled. Removing it clears deferred bridge announcements. Announcements also re-check flags after asynchronous detail fetches, so disabling notifications during a fetch cannot start a new automatic read afterward. Manual speech commands, agent status updates and silent transport bells are unaffected. `/t3 notifications on|off` and the Settings checkbox use the same control path.
 
 ## Controller
 

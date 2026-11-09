@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// t3code-wow: install and run the T3 Code bridge for World of Warcraft: Forever.
+// herdr-wow: Herdr inside World of Warcraft: Forever.
+// The script filename and legacy installation paths remain stable for upgrades.
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -10,8 +11,11 @@ import { Bridge, STATE_DIR, VERSION } from '../src/bridge.js';
 import { CONFIG_DIR, mintToken, readToken, tokenClaims, findT3Cli } from '../src/auth.js';
 import { findWowInstalls, addonsDir as addonsDirOf, findWowProcess } from '../src/wow.js';
 import { SlotBank, ADDON, CTL_LONG } from '../src/slots.js';
-import { StripCapture } from '../src/capture.js';
+import { StripCapture, MAC_CAPTURE } from '../src/capture.js';
+import { validateHerdrConfig, herdrCommand } from '../src/herdr.js';
 import { decodeImage } from '../src/codec.js';
+import { importKeybindings } from '../src/keybindings.js';
+import { luaValue } from '../src/luaser.js';
 import { identify, discoverTailscale, mintRemote, revokeRemote, saveToken, readTokenData, tokenFile } from '../src/envs.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -21,6 +25,7 @@ const UNIT_NAME = 't3code-wow.service';
 const UNIT_FILE = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'systemd/user', UNIT_NAME);
 const DATA_DIR = path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local/share'), 't3code-wow');
 const BIN_LINK = path.join(os.homedir(), '.local/bin/t3code-wow');
+const HERDR_BIN_LINK = path.join(os.homedir(), '.local/bin/herdr-wow');
 const DEFAULT_SLOTS = 1200;
 
 const C = process.stdout.isTTY
@@ -108,6 +113,8 @@ function syncAddon(addonsDir) {
     if (e.name === 'Signals') continue;
     const s = path.join(src, e.name);
     const d = path.join(dst, e.name);
+    // This file is user-staged data, not addon code. Keep imports on upgrades.
+    if (e.name === 'ImportedBindings.lua' && fs.existsSync(d)) continue;
     if (e.isDirectory()) copyDir(s, d);
     else fs.copyFileSync(s, d);
   }
@@ -116,6 +123,17 @@ function syncAddon(addonsDir) {
 
 async function cmdInstall(args) {
   const cfg = readConfig();
+  // Pre-backend configurations came from the original T3 installer.
+  const backend = String(args.backend || cfg.backend || (cfg.wowDir || cfg.addonsDir ? 't3' : 'herdr'));
+  if (!['t3', 'herdr'].includes(backend)) throw new Error('Choose --backend t3 or --backend herdr');
+  if (backend === 'herdr') {
+    validateHerdrConfig(cfg.herdr);
+    await herdrCommand(['workspace', 'list'], { session: cfg.herdr?.session || 'default' });
+  }
+  if (process.platform === 'darwin') {
+    console.log('Building the macOS screen-capture helper…');
+    execFileSync('/usr/bin/xcrun', ['swiftc', '-parse-as-library', '-O', path.join(BRIDGE_ROOT, 'native/mac-capture.swift'), '-o', MAC_CAPTURE], { stdio: 'inherit', timeout: 120000 });
+  }
   const wowDir = resolveWowDir(args, cfg);
   const addonsDir = addonsDirOf(wowDir);
   console.log(`${C.b('World of Warcraft:')} ${wowDir}`);
@@ -135,29 +153,34 @@ async function cmdInstall(args) {
   console.log(`${C.g('✓')} ${slots} live-update slots ready ${C.d(`(${made} files written${pruned ? `, ${pruned} unused signal files removed` : ''})`)}`);
 
   const { signals: _legacySignals, ...rest } = cfg;
-  const next = { ...rest, wowDir, addonsDir, slots };
+  const next = { ...rest, backend, wowDir, addonsDir, slots };
   writeConfig(next);
 
-  if (!findT3Cli()) {
-    console.log(C.r('✗ The `t3` command was not found. Open T3 Code once (it installs `t3`), then run `t3code-wow install` again.'));
-    process.exitCode = 1;
-    return;
+  if (backend === 't3') {
+    if (!findT3Cli()) {
+      console.log(C.r('✗ The `t3` command was not found. Open T3 Code once (it installs `t3`), then run `herdr-wow install` again.'));
+      process.exitCode = 1;
+      return;
+    }
+    const token = readToken();
+    const claims = token && tokenClaims(token);
+    if (!claims || (claims.exp && claims.exp < Date.now() + 86400000)) {
+      process.stdout.write('… Creating a T3 Code session for the bridge (this takes a few seconds)\r');
+      await mintToken();
+    }
+    console.log(`${C.g('✓')} T3 Code session ready ${C.d('(scoped to reading and running threads; revoke with `t3 auth session list`)')}`);
+  } else {
+    console.log(`${C.g('✓')} Herdr ready; browsing all spaces and tabs. New Pi sessions use configured launch projects.`);
   }
-  const token = readToken();
-  const claims = token && tokenClaims(token);
-  if (!claims || (claims.exp && claims.exp < Date.now() + 86400000)) {
-    process.stdout.write('… Creating a T3 Code session for the bridge (this takes a few seconds)\r');
-    await mintToken();
-  }
-  console.log(`${C.g('✓')} T3 Code session ready ${C.d('(scoped to reading and running threads; revoke with `t3 auth session list`)')}`);
 
-  if (!args['no-service']) {
+  const service = !args['no-service'] && process.platform === 'linux';
+  if (service) {
     const node = process.execPath;
     const script = path.join(BRIDGE_ROOT, 'bin', 't3code-wow.js');
     fs.mkdirSync(path.dirname(UNIT_FILE), { recursive: true });
     fs.writeFileSync(UNIT_FILE, [
       '[Unit]',
-      'Description=T3 Code bridge for World of Warcraft',
+      'Description=Herdr bridge for World of Warcraft',
       'After=graphical-session.target',
       '',
       '[Service]',
@@ -176,12 +199,14 @@ async function cmdInstall(args) {
     console.log(`${C.g('✓')} Bridge running as the ${UNIT_NAME} user service`);
   }
 
+  if (!service) console.log('Start the bridge in a terminal with `herdr-wow run`. Keep that terminal running.');
   console.log('');
   await firstLaunch({
     restart: freshAddon || had < slots || bellsMissing,
-    running: !!findWowProcess(),
-    waiting: !args['no-service'] && process.stdin.isTTY && process.stdout.isTTY,
+    running: !!findWowProcess(wowDir),
+    waiting: service && process.stdin.isTTY && process.stdout.isTTY,
     since: Date.now(),
+    backend,
   });
 }
 
@@ -195,7 +220,7 @@ function readStatus() {
 
 // After installing: say exactly what to do in the game, then wait (Enter skips) until
 // the addon checks in, so you know it works before you go looking for it.
-async function firstLaunch({ restart, running, waiting, since }) {
+async function firstLaunch({ restart, running, waiting, since, backend }) {
   let step;
   if (restart) step = running ? 'Quit World of Warcraft completely and start it again, then log in to a character.' : 'Start World of Warcraft: Forever and log in to a character.';
   else step = running ? 'Type /reload in game.' : 'Start World of Warcraft: Forever and log in to a character.';
@@ -232,20 +257,20 @@ async function firstLaunch({ restart, running, waiting, since }) {
       const enc = readStatus()?.addon?.encrypted;
       console.log(`${C.g('✓')} Connected: the game and the bridge are talking${enc ? ' over an encrypted link' : ''}.`);
     } else if (!skipped) {
-      console.log(C.y('The game hasn\'t checked in yet. Once you\'re in, `t3code-wow status` shows whether it connected.'));
+      console.log(C.y('The game hasn\'t checked in yet. Once you\'re in, `herdr-wow status` shows whether it connected.'));
     }
   }
   console.log(`
 ${C.b('In game')}
-  /t3                       open or close T3 Code (or click the T3 button on the minimap)
+  /herdr                    open or close Herdr (or click its minimap button; /t3 still works)
   both triggers + Back      open it from a controller
-  /t3 selftest              check the link step by step if something seems off
+  /herdr selftest           check the link step by step if something seems off
 
 ${C.b('From here')}
-  t3code-wow env add <host>   show threads from another machine (T3 Connect)
-  t3code-wow status           what the bridge sees
+  ${backend === 'herdr' ? 'New Thread in game          start Pi in a background Herdr tab' : 'herdr-wow env add <host>   show threads from another machine (T3 Connect)'}
+  herdr-wow status           what the bridge sees
   rerun the install command   update
-  t3code-wow uninstall        remove everything`);
+  herdr-wow uninstall        remove this addon and bridge (not Herdr's tabs)`);
 }
 
 function cmdSync(args) {
@@ -280,7 +305,7 @@ function cmdStatus(args) {
   try {
     st = JSON.parse(fs.readFileSync(path.join(STATE_DIR, 'status.json'), 'utf8'));
   } catch {
-    console.log(C.r('The bridge has not run yet.'), 'Start it with `t3code-wow install` or `t3code-wow run`.');
+    console.log(C.r('The bridge has not run yet.'), 'Start it with `herdr-wow install` or `herdr-wow run`.');
     process.exitCode = 1;
     return;
   }
@@ -289,14 +314,14 @@ function cmdStatus(args) {
   const alive = age < 10000;
   const ok = (b) => (b ? C.g('●') : C.r('●'));
   console.log(`${ok(alive)} Bridge ${st.version} ${alive ? `running (pid ${st.pid})` : `not running (last seen ${ago(age)})`}`);
-  console.log(`${ok(st.t3.state === 'connected')} T3 Code: ${st.t3.state}${st.t3.error ? ` — ${st.t3.error}` : ''} ${C.d(`(${st.t3.threads} threads, ${st.t3.origin || '?'})`)}`);
+  console.log(`${ok(st.t3.state === 'connected')} ${st.backend || 'T3 Code'}: ${st.t3.state}${st.t3.error ? ` — ${st.t3.error}` : ''} ${C.d(`(${st.t3.threads} threads, ${st.t3.origin || '?'})`)}`);
   console.log(`${ok(!!st.wow)} WoW: ${st.wow ? `running (pid ${st.wow.pid})` : 'not running'}`);
   console.log(`${ok(st.capture.state === 'ok' || st.capture.state === 'idle')} Screen link: ${st.capture.state} via ${st.capture.backend} ${C.d(`(${st.capture.decoded} frames read, ${st.capture.rejected} rejected)`)}${st.capture.lastError ? `\n    ${C.y(st.capture.lastError)}` : ''}`);
   if (st.addon) {
     console.log(`${ok(true)} Addon ${st.addon.version}: last heard ${ago(Date.now() - st.addon.lastSeen)}; window ${st.addon.flags.includes('o') ? 'open' : 'closed'}`);
     console.log(`${ok(st.addon.encrypted)} Link ${st.addon.encrypted ? 'encrypted' : 'not encrypted yet (waiting for the addon to load its keys)'}${st.rejected?.forged ? C.d(` · ${st.rejected.forged} unauthenticated frames ignored`) : ''}`);
   } else {
-    console.log(`${ok(false)} Addon: not heard from yet ${C.d('(log in, then /t3)')}`);
+    console.log(`${ok(false)} Addon: not heard from yet ${C.d('(log in, then /herdr)')}`);
   }
   console.log(`  Live updates left this session: ${st.slots.remaining}/${st.slots.total} ${C.d(`· ${st.publishes} updates sent · update bell #${st.signals.next}`)}`);
   console.log(`  Speech: ${st.voice.tts || C.y('none')} · Dictation: ${st.voice.dictation || C.y('none')}`);
@@ -307,12 +332,13 @@ function cmdStatus(args) {
 }
 
 async function cmdProbe() {
-  const proc = findWowProcess();
-  const cap = new StripCapture({});
+  const cfg = readConfig();
+  const proc = findWowProcess(cfg.wowDir);
+  const cap = new StripCapture(cfg.capture || {});
   console.log(`backend: ${cap.resolveBackend()}; WoW pid: ${proc?.pid ?? 'not running'}`);
   const res = await cap.grab(proc?.pid);
   if (res.status !== 'ok') return console.log(`capture: ${res.status}`);
-  const out = path.join(os.tmpdir(), 't3code-wow-probe.ppm');
+  const out = path.join(os.tmpdir(), 'herdr-wow-probe.ppm');
   const img = res.image;
   fs.writeFileSync(out, Buffer.concat([Buffer.from(`P6\n${img.width} ${img.height}\n255\n`), Buffer.from(img.data)]));
   let png = out;
@@ -322,7 +348,7 @@ async function cmdProbe() {
   } catch {}
   const dec = decodeImage(img);
   console.log(`captured ${img.width}x${img.height} -> ${png}`);
-  if (!dec) console.log('no strip visible (open the T3 window in game, or send something)');
+  if (!dec) console.log('no strip visible (open the Herdr window in game, or send something)');
   else if (dec.error) console.log(`strip found but unreadable: ${dec.error} (cell ${dec.geo.cell}px at ${dec.geo.ox},${dec.geo.oy})`);
   else console.log(`strip decoded: seq ${dec.seq}, ${dec.payload.length} bytes, cell ${dec.geo.cell}px at ${dec.geo.ox},${dec.geo.oy}`);
 }
@@ -339,10 +365,10 @@ async function ask(question) {
 async function cmdUninstall(args) {
   const cfg = readConfig();
   if (!args.yes) {
-    console.log('This removes T3 Code for World of Warcraft: the addon and its update folders, its settings in the game,');
+    console.log('This removes Herdr for World of Warcraft: the addon and its update folders, its settings in the game,');
     console.log('the bridge service, the bridge\'s T3 Code sessions (on every machine it was added to) and its files.');
     if (!(await ask('Remove it? [y/N] '))) {
-      console.log(process.stdin.isTTY ? 'Nothing removed.' : 'Nothing removed. Run `t3code-wow uninstall --yes` to remove without asking.');
+      console.log(process.stdin.isTTY ? 'Nothing removed.' : 'Nothing removed. Run `herdr-wow uninstall --yes` to remove without asking.');
       return;
     }
   }
@@ -409,18 +435,22 @@ async function cmdUninstall(args) {
   fs.rmSync(STATE_DIR, { recursive: true, force: true });
   done('Removed the bridge\'s settings and state');
 
-  try {
-    if (fs.lstatSync(BIN_LINK).isSymbolicLink() && fs.readlinkSync(BIN_LINK).startsWith(DATA_DIR)) fs.rmSync(BIN_LINK);
-  } catch {}
+  for (const link of [HERDR_BIN_LINK, BIN_LINK]) {
+    try {
+      const target = path.resolve(path.dirname(link), fs.readlinkSync(link));
+      if (fs.lstatSync(link).isSymbolicLink() && target.startsWith(path.resolve(DATA_DIR) + path.sep)) fs.rmSync(link);
+    } catch {}
+  }
   fs.rmSync(DATA_DIR, { recursive: true, force: true });
-  done('Removed the t3code-wow command and its files');
+  done('Removed bridge files and this installation\'s command aliases');
 
-  if (findWowProcess()) console.log(`\nWorld of Warcraft is running: ${C.b('/reload')} or restart it to finish unloading T3 Code.`);
+  if (findWowProcess()) console.log(`\nWorld of Warcraft is running: ${C.b('/reload')} or restart it to finish unloading Herdr.`);
 }
 
 async function cmdEnv(args) {
   const sub = args._[1];
   const cfg = readConfig();
+  if (cfg.backend === 'herdr') throw new Error('env manages T3 machines. Configure local Herdr projects with `herdr-wow project add`.');
   cfg.environments = cfg.environments || [];
   if (sub === 'list' || !sub) {
     console.log(`${C.b('this computer')} ${C.d('(always shown)')}`);
@@ -438,12 +468,12 @@ async function cmdEnv(args) {
       }
       console.log(`${C.b(e.label)} ${state} ${C.d(`· ssh ${e.ssh || '-'} · token ${tok?.expiresAt ? `until ${tok.expiresAt.slice(0, 10)}` : 'missing'}`)}`);
     }
-    if (!cfg.environments.length) console.log(C.d('No other machines yet. Add one with: t3code-wow env add <tailscale or ssh host> [--url https://...]'));
+    if (!cfg.environments.length) console.log(C.d('No other machines yet. Add one with: herdr-wow env add <tailscale or ssh host> [--url https://...]'));
     return;
   }
   if (sub === 'add') {
     const host = args._[2];
-    if (!host) throw new Error('usage: t3code-wow env add <host> [--url https://...] [--ssh <ssh host>]');
+    if (!host) throw new Error('usage: herdr-wow env add <host> [--url https://...] [--ssh <ssh host>]');
     const ssh = args.ssh ? String(args.ssh) : host;
     const urls = [];
     for (const u of [].concat(args.url || [])) urls.push(String(u).replace(/\/?$/, '/'));
@@ -470,7 +500,7 @@ async function cmdEnv(args) {
     process.stdout.write(`… Creating a T3 Code session on ${ident.label} over SSH (${ssh})\r`);
     const tok = await mintRemote(ssh, `WoW bridge (${local.label || os.hostname()})`);
     saveToken(ident.environmentId, tok);
-    console.log(`${C.g('✓')} Session created on ${ident.label} ${C.d(`(revoke with t3code-wow env remove ${ident.label})`)}`);
+    console.log(`${C.g('✓')} Session created on ${ident.label} ${C.d(`(revoke with herdr-wow env remove ${ident.label})`)}`);
     const existing = cfg.environments.find((e) => e.id === ident.environmentId);
     const used = new Set(cfg.environments.map((e) => e.code));
     let code = existing?.code;
@@ -485,7 +515,7 @@ async function cmdEnv(args) {
   if (sub === 'remove') {
     const name = args._[2];
     const e = cfg.environments.find((x) => x.label === name || x.id === name || x.ssh === name);
-    if (!e) throw new Error(`no machine called ${name}; see t3code-wow env list`);
+    if (!e) throw new Error(`no machine called ${name}; see herdr-wow env list`);
     const tok = readTokenData(e.id);
     if (tok?.sessionId && e.ssh) {
       try {
@@ -502,34 +532,81 @@ async function cmdEnv(args) {
     console.log(`${C.g('✓')} Removed ${e.label}`);
     return;
   }
-  throw new Error('usage: t3code-wow env [list|add <host>|remove <name>]');
+  throw new Error('usage: herdr-wow env [list|add <host>|remove <name>]');
+}
+
+// Stage declarative shortcuts only; WoW owns applying and persisting bindings.
+async function cmdKeybinds(args) {
+  if (args._[1] !== 'import') throw new Error('Use herdr-wow keybinds import [--config FILE] [--prefix-modifier ctrl-alt] [--apply]');
+  const source = args.config || process.env.HERDR_CONFIG_PATH || path.join(os.homedir(), '.config/herdr/config.toml');
+  if (typeof source !== 'string') throw new Error('--config needs a file path');
+  const { bindings, skipped } = importKeybindings(fs.readFileSync(source, 'utf8'), { prefixModifier: args['prefix-modifier'] });
+  console.log('Herdr → WoW keybinding preview (only supported actions):');
+  for (const b of bindings) console.log(`  ${b.action}: ${b.source} → ${b.key}`);
+  for (const reason of skipped) console.log(`  Skipped ${reason}`);
+  console.log('Custom commands and unrelated Herdr settings are never imported.');
+  if (!args.apply) {
+    console.log('Preview only. Add --apply to stage these bindings; WoW will still ask before changing keys.');
+    return;
+  }
+  if (!bindings.length) throw new Error('No supported shortcuts to import');
+  const cfg = readConfig();
+  const addonsDir = args.wow ? addonsDirOf(resolveWowDir(args, cfg)) : cfg.addonsDir || addonsDirOf(resolveWowDir(args, cfg));
+  const addon = path.join(addonsDir, ADDON);
+  const toc = path.join(addon, `${ADDON}.toc`);
+  if (!fs.existsSync(toc) || !fs.readFileSync(toc, 'utf8').includes('ImportedBindings.lua')) throw new Error('Update the addon with ./install.sh before importing keys');
+  const target = path.join(addon, 'ImportedBindings.lua');
+  const data = bindings.map(({ key, binding }) => ({ key, binding }));
+  if (fs.existsSync(target)) fs.copyFileSync(target, `${target}.bak`);
+  const temp = `${target}.tmp`;
+  fs.writeFileSync(temp, `-- Generated by herdr-wow keybinds import. No terminal commands are imported.\nlocal _, ns = ...\nns.importedBindings = ${luaValue(data)}\n`, { encoding: 'latin1', mode: 0o600 });
+  fs.renameSync(temp, target);
+  console.log('Staged. In WoW: /reload, then /herdr importkeys to review conflicts and confirm. No bridge restart needed.');
+}
+
+// Explicit allowlist for in-game Pi launches. This only writes configuration;
+// it never creates a Herdr workspace or starts an agent.
+async function cmdProject(args) {
+  const cfg = readConfig();
+  if (args._[1] !== 'add' || !args._[2] || !args.cwd || !args.workspace) throw new Error('usage: herdr-wow project add <id> --cwd DIR --workspace ID [--name TEXT] [--session NAME]');
+  const id = args._[2];
+  const session = args.session || cfg.herdr?.session || 'default';
+  const project = { id, name: String(args.name || id), cwd: path.resolve(String(args.cwd)), workspace: String(args.workspace) };
+  const herdr = { ...cfg.herdr, session, projects: [...(cfg.herdr?.projects || []).filter((p) => p.id !== id), project] };
+  validateHerdrConfig(herdr);
+  const { workspaces } = await herdrCommand(['workspace', 'list'], { session });
+  if (!workspaces?.some((w) => w.workspace_id === project.workspace)) throw new Error('That workspace does not exist in the selected Herdr session');
+  writeConfig({ ...cfg, herdr });
+  console.log(`Configured ${id} for Pi in Herdr. Install with --backend herdr, then restart the bridge after configuration changes.`);
 }
 
 function help() {
-  console.log(`${C.b('t3code-wow')} ${VERSION} — T3 Code inside World of Warcraft: Forever
+  console.log(`${C.b('herdr-wow')} ${VERSION} — Herdr inside World of Warcraft: Forever
 
-  t3code-wow install [--wow DIR] [--slots N] [--no-service]
-                     Install the addon, its live-update slots and the bridge service
-  t3code-wow status [--log] [--json]
-                     Show what the bridge sees
-  t3code-wow sync        Re-copy the installed addon into the game (to update, rerun the install command)
-  t3code-wow run [--verbose]
-                     Run the bridge in the foreground (the service runs this)
-  t3code-wow env [list]  Other T3 Code machines shown in game (T3 Connect / Tailscale)
-  t3code-wow env add <host> [--url https://...] [--ssh <ssh host>]
-                     Show another machine's threads too (finds it on Tailscale,
-                     creates its session over SSH)
-  t3code-wow env remove <name>
-                     Stop showing a machine and revoke the bridge's session there
-  t3code-wow probe       Capture the corner of the game window and try to read the strip
-  t3code-wow uninstall [--yes]
-                     Remove the addon, its settings, the service, the bridge's
-                     T3 Code sessions and its files`);
+  herdr-wow install [--backend herdr|t3] [--wow DIR] [--slots N] [--no-service]
+                     Install the addon and bridge (new installs default to Herdr)
+  herdr-wow status [--log] [--json]
+                     Show backend, game, capture and addon status
+  herdr-wow sync      Re-copy the installed addon; rerun ./install.sh for checkout edits
+  herdr-wow keybinds import [--config FILE] [--prefix-modifier ctrl-alt] [--apply] [--wow DIR]
+                     Preview Herdr shortcuts; --apply stages them for /herdr importkeys
+  herdr-wow run [--verbose]
+                     Run the bridge in the foreground
+  herdr-wow project add <id> --cwd DIR --workspace ID [--name TEXT] [--session NAME]
+                     Allow an existing Herdr workspace/directory for new Pi sessions
+  herdr-wow env [list|add <host>|remove <name>]
+                     Manage optional T3 Code remote backends (T3 Connect / Tailscale)
+  herdr-wow probe     Capture and decode the game window's pixel strip
+  herdr-wow uninstall [--yes]
+                     Remove this addon/bridge, not Herdr's tabs or agent conversations
+
+  In game: /herdr (legacy /t3 still works).
+  The t3code-wow CLI alias and existing installation paths remain supported.`);
 }
 
 const args = parseArgs(process.argv.slice(2));
 const cmd = args._[0];
-const commands = { env: cmdEnv, install: cmdInstall, run: cmdRun, status: cmdStatus, sync: cmdSync, probe: cmdProbe, uninstall: cmdUninstall };
+const commands = { keybinds: cmdKeybinds, project: cmdProject, env: cmdEnv, install: cmdInstall, run: cmdRun, status: cmdStatus, sync: cmdSync, probe: cmdProbe, uninstall: cmdUninstall };
 if (!cmd || args.help || !commands[cmd]) {
   help();
   if (cmd && !commands[cmd]) process.exitCode = 1;

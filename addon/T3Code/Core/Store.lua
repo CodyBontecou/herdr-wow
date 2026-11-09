@@ -10,6 +10,30 @@ local Store = {
 }
 ns.Store = Store
 
+-- Session-only transcript cache. Never replay cached interactive requests.
+local recentViews, viewOrder = {}, {}
+local VIEW_CACHE_LIMIT = 12
+
+local function TouchView(id)
+	for i, cachedId in ipairs(viewOrder) do
+		if cachedId == id then
+			table.remove(viewOrder, i)
+			break
+		end
+	end
+	table.insert(viewOrder, id)
+	if #viewOrder > VIEW_CACHE_LIMIT then
+		recentViews[table.remove(viewOrder, 1)] = nil
+	end
+end
+
+-- Missing capability flags preserve the original T3 behavior.
+function Store:Can(action, thread)
+	local caps = (thread and thread.caps) or self.data.bridge.caps
+	if action == "closeThread" then return caps and caps.closeThread == true or false end
+	return not caps or caps[action] ~= false
+end
+
 local GROUP_OF = {
 	working = "working", input = "working", plan = "working",
 	open = "open", failed = "open",
@@ -22,6 +46,12 @@ function Store:Apply(data)
 	data.projects = data.projects or {}
 	data.usage = data.usage or {}
 	data.bridge = data.bridge or {}
+	local v = data.view
+	if v and v.id and not v.loading then
+		-- Keep display content only, not pending questions, approvals or live activity.
+		recentViews[v.id] = { id = v.id, msgs = v.msgs, note = v.note, more = v.more }
+		TouchView(v.id)
+	end
 	local before = self.byId
 	local byId, projectsById = {}, {}
 	for _, t in ipairs(data.threads) do byId[t.id] = t end
@@ -45,6 +75,11 @@ end
 
 function Store:Thread(id)
 	return id and self.byId[id]
+end
+
+function Store:CanLaunchProject(id)
+	local project = id and self.projectsById[id]
+	return project and project.launch ~= false
 end
 
 function Store:ProjectName(id)
@@ -85,6 +120,12 @@ end
 
 function Store:View()
 	local v = self.data.view
+	if v and v.id == ns.viewId and not v.loading then return v end
+	local cached = ns.viewId and recentViews[ns.viewId]
+	if cached then
+		TouchView(ns.viewId)
+		return cached
+	end
 	if v and v.id == ns.viewId then return v end
 end
 
@@ -155,7 +196,7 @@ function ns.Speak(text, threadId, messageIndex)
 		C_VoiceChat.SpeakText(voice, ns.StripMarkup(text):sub(1, 2000), rate, volume, false)
 		return true
 	end
-	ns.Print("No text-to-speech voice is available. Pick one in T3 Code settings.")
+	ns.Print("No text-to-speech voice is available. Pick one in Herdr settings.")
 	return false
 end
 

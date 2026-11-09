@@ -8,7 +8,7 @@ ns.Toasts = N
 
 local MAX = 3
 local WIDTH = 380
-local TEXT_W = WIDTH - 62 - 16
+local TEXT_W = WIDTH - 62 - 34
 local LIFETIME = 7
 
 local function Sound(kind)
@@ -45,6 +45,11 @@ local function CreateToast(i)
 	f.Text:SetMaxLines(4)
 	f.Text:SetWidth(TEXT_W)
 	f.Text:SetWordWrap(true)
+	f.Close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+	f.Close:SetSize(22, 22)
+	f.Close:SetPoint("TOPRIGHT", -4, -4)
+	f.Close:SetScript("OnClick", function() f:Hide() end)
+	ns.UI.Tooltip(f.Close, "Dismiss notification", "Closes this notice without opening its thread.")
 	f:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 	f:SetScript("OnClick", function(self, button)
 		if button == "LeftButton" and self.threadId then ns.Main:SelectThread(self.threadId, { show = true }) end
@@ -56,7 +61,11 @@ local function CreateToast(i)
 	a:SetToAlpha(0)
 	a:SetDuration(0.6)
 	f.fade:SetScript("OnFinished", function() f:Hide() end)
-	f:SetScript("OnHide", function() N:Layout() end)
+	f:SetScript("OnHide", function()
+		if f.timer then f.timer:Cancel() f.timer = nil end
+		f.fade:Stop()
+		N:Layout()
+	end)
 	f:Hide()
 	return f
 end
@@ -84,6 +93,7 @@ function N:Layout()
 end
 
 function N:Show(t, kind)
+	if ns.db.settings.notifications == false or not ns.db.settings.toasts then return end
 	local f
 	for i = 1, MAX do
 		self.frames[i] = self.frames[i] or CreateToast(i)
@@ -114,8 +124,24 @@ local VERBS = { input = "needs your input", plan = "has a plan ready", failed = 
 
 N.held = {}
 
+function N:RefreshSettings()
+	local s = ns.db.settings
+	if s.notifications == false then self.held = {} end
+	if s.notifications == false or not s.toasts then
+		for _, frame in ipairs(self.frames) do frame:Hide() end
+	end
+end
+
+function N:SetEnabled(enabled)
+	ns.db.settings.notifications = enabled and true or false
+	self:RefreshSettings()
+	ns.Transport:Touch()
+	if ns.Settings then ns.Settings:Refresh() end
+end
+
 local function Notify(t, kind, quietSound)
 	local s = ns.db.settings
+	if s.notifications == false then return end
 	if not quietSound then Sound(kind) end
 	local viewing = ns.windowOpen and ns.viewId == t.id
 	if s.toasts and not viewing then N:Show(t, kind) end
@@ -126,6 +152,7 @@ local function Notify(t, kind, quietSound)
 end
 
 ns:On("ThreadTransition", function(t, before, after)
+	if ns.db.settings.notifications == false then return end
 	local finished = before == "working" and (after == "open" or after == "failed")
 	local needsYou = (after == "input" or after == "plan") and before ~= after
 	if not finished and not needsYou then return end
@@ -144,6 +171,7 @@ ns:On("ThreadTransition", function(t, before, after)
 end)
 
 local function Flush()
+	if ns.db.settings.notifications == false then N.held = {} return end
 	if #N.held == 0 or ns.IsQuiet() then return end
 	local held = N.held
 	N.held = {}

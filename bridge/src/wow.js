@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 
 const FLAVOR = '_forever_';
 // Omarchy's Battle.net installer (omarchy-install-gaming-battlenet) uses this prefix.
@@ -67,9 +68,14 @@ function battlenetWowDirs(root) {
 }
 
 // { forever: [...WoW: Forever folders], wowOnly: [...WoW installs without Forever], prefixes: [...prefixes with Battle.net] }
-export function findWowInstalls() {
+export function findWowInstalls({ platform = process.platform, nativeRoots = ['/Applications/World of Warcraft', path.join(os.homedir(), 'Applications/World of Warcraft')] } = {}) {
   const forever = [];
   const wowOnly = [];
+  if (platform === 'darwin') for (const wow of nativeRoots) {
+    const dir = path.join(wow, FLAVOR);
+    if (fs.existsSync(path.join(dir, 'World of Warcraft.app'))) forever.push(dir);
+    else if (fs.existsSync(wow)) wowOnly.push(wow);
+  }
   const roots = candidateRoots();
   for (const root of roots) {
     const wowDirs = [
@@ -102,7 +108,25 @@ export function addonsDir(wowDir) {
 
 // The running Forever client: { pid, startTicks } or null. startTicks (from
 // /proc/<pid>/stat) distinguishes a restarted client that happens to reuse a pid.
-export function findWowProcess() {
+// ps lstart includes the launch date, so PID reuse does not alias a new client.
+export function parseMacWowProcess(output, wowDir) {
+  const expected = wowDir ? path.join(wowDir, 'World of Warcraft.app/Contents/MacOS/World of Warcraft') : null;
+  for (const line of output.split('\n')) {
+    const m = /^\s*(\d+)\s+([A-Za-z]{3}\s+[A-Za-z]{3}\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.+)$/.exec(line);
+    if (!m) continue;
+    const command = m[3];
+    const executable = expected || command.match(/^(.+\/_forever_\/World of Warcraft\.app\/Contents\/MacOS\/World of Warcraft)(?:\s|$)/)?.[1];
+    if (executable && (command === executable || command.startsWith(executable + ' '))) return { pid: Number(m[1]), startTicks: m[2] };
+  }
+  return null;
+}
+
+export function findWowProcess(wowDir) {
+  if (process.platform === 'darwin') {
+    try {
+      return parseMacWowProcess(execFileSync('/bin/ps', ['-axo', 'pid=,lstart=,command='], { encoding: 'utf8', timeout: 3000, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C' } }), wowDir);
+    } catch { return null; }
+  }
   let entries;
   try {
     entries = fs.readdirSync('/proc');

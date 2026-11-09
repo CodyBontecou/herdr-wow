@@ -1,4 +1,4 @@
--- The T3 Code window: a standard portrait frame with the thread list on the left,
+-- The Herdr window: a standard portrait frame with the thread list on the left,
 -- the selected thread on the right, and side tabs for usage and settings.
 
 local _, ns = ...
@@ -43,7 +43,7 @@ function M:Create()
 	f:SetClampedToScreen(true)
 	f:EnableMouse(true)
 	f:Hide()
-	f:SetTitle("T3 Code")
+	f:SetTitle(ns.title)
 	f:SetPortraitToAsset(ns.media .. "portrait")
 	tinsert(UISpecialFrames, "T3CodeFrame")
 
@@ -54,9 +54,12 @@ function M:Create()
 	drag:SetHeight(24)
 	drag:EnableMouse(true)
 	drag:RegisterForDrag("LeftButton")
-	drag:SetScript("OnDragStart", function() f:StartMoving() end)
+	drag:SetScript("OnDragStart", function()
+		if not ns.db.settings.fullscreen then f:StartMoving() end
+	end)
 	drag:SetScript("OnDragStop", function()
 		f:StopMovingOrSizing()
+		if ns.db.settings.fullscreen then return end
 		local point, _, rel, x, y = f:GetPoint()
 		ns.db.settings.windowPoint = { point, rel, x, y }
 	end)
@@ -76,7 +79,7 @@ function M:Create()
 	f.Status:SetWidth(WIDTH - 220)
 
 	-- Collapse the thread list (arrow under the close button).
-	f.SidebarToggle = UI.IconButton(f, "common-icon-backarrow", 24, "Hide the thread list", function() M:ToggleSidebar() end)
+	f.SidebarToggle = UI.IconButton(f, "common-icon-backarrow", 24, "Show or hide the sidebar", function() M:ToggleSidebar() end)
 	if not f.SidebarToggle.Icon:GetAtlas() then f.SidebarToggle.Icon:SetAtlas("common-dropdown-icon-back") end
 	f.SidebarToggle:SetPoint("TOPRIGHT", -10, -32)
 
@@ -176,7 +179,7 @@ function M:CreateThreadsPage(page)
 	end)
 	header.Archive:SetPoint("RIGHT", header.Action, "LEFT", -4, 0)
 	header.Archive:Hide()
-	UI.Tooltip(header.Archive, "Archive", "Hide this thread from the list (it stays in T3 Code's archive).")
+	UI.Tooltip(header.Archive, "Archive", "Hide this thread from the list (it stays in the agent backend's archive).")
 	header.Project = UI.Dropdown(header, 220, function(value)
 		M.newProject = value
 		M:Refresh()
@@ -184,6 +187,7 @@ function M:CreateThreadsPage(page)
 	header.Project:SetPoint("RIGHT", -6, 0)
 	header.Project:Hide()
 	right.Header = header
+	ns.ThreadList:CreateTabs(right)
 
 	local composer = UI.Inset(right)
 	composer:SetPoint("BOTTOMLEFT", 2, 2)
@@ -267,7 +271,7 @@ function M:CreateButtonBar(f)
 	bar.Shot:SetScript("OnClick", function(_, button)
 		if button == "RightButton" then M:RemoveScreenshots() else M:AttachScreenshot() end
 	end)
-	UI.Tooltip(bar.Shot, "Attach a screenshot", "Adds a screenshot of the game to your next message. Right-click to remove it. /t3 report also adds diagnostics.")
+	UI.Tooltip(bar.Shot, "Attach a screenshot", "Adds a screenshot of the game to your next message. Right-click to remove it. /herdr report also adds diagnostics.")
 	UI.Tooltip(bar.Speak, nil, "Read the latest reply aloud.")
 
 	bar.Send = UI.Button(f, "Send", 110, function() M:Send() end)
@@ -354,6 +358,34 @@ function M:SelectThread(id, opts)
 	ns:Fire("ViewSelected", id)
 end
 
+StaticPopupDialogs["T3CODE_CLOSE_THREAD"] = {
+	text = "Close this Herdr tab? All panes and running processes in the tab will be terminated. This cannot be undone.",
+	button1 = "Close tab",
+	button2 = "Cancel",
+	OnAccept = function(_, data)
+		local t = data and ns.Store:Thread(data.id)
+		if t and t.closeTabId == data.tabId and ns.Store:Can("closeThread", t) then
+			ns.Transport:Send("closeThread", data.id, data.tabId)
+		end
+	end,
+	timeout = 0,
+	whileDead = true,
+	hideOnEscape = true,
+	preferredIndex = 3,
+}
+
+function M:CloseThread()
+	if self.mode ~= "thread" or not ns.viewId then return end
+	local t = ns.Store:Thread(ns.viewId)
+	if not t then return end
+	if not ns.Store:Can("closeThread", t) then
+		ns.Print("Closing tabs is not supported by this backend. Use your desktop.")
+		return
+	end
+	if not t.closeTabId then return end
+	StaticPopup_Show("T3CODE_CLOSE_THREAD", nil, nil, { id = t.id, tabId = t.closeTabId })
+end
+
 function M:Back()
 	if self.mode == "new" then
 		self.mode = "thread"
@@ -379,9 +411,11 @@ function M:StartNewThread(projectId)
 	self.mode = "new"
 	local filter = ns.db.settings.project
 	self.newProject = projectId or (filter ~= "all" and filter) or ns.db.settings.lastProject
-	if not ns.Store.projectsById[self.newProject or ""] then
-		local first = ns.Store.data.projects[1]
-		self.newProject = first and first.id
+	if not ns.Store:CanLaunchProject(self.newProject) then
+		self.newProject = nil
+		for _, project in ipairs(ns.Store.data.projects) do
+			if ns.Store:CanLaunchProject(project.id) then self.newProject = project.id break end
+		end
 	end
 	self:LoadDraft()
 	if self.page ~= "threads" then self:ShowPage("threads") end
@@ -392,7 +426,7 @@ end
 
 function M:HeaderAction()
 	local t = ns.Store:Thread(ns.viewId)
-	if not t then return end
+	if not t or not ns.Store:Can("settle", t) then return end
 	if t.s == "settled" then
 		ns.Transport:Send("unsettle", t.id)
 		PlaySound(SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON)
@@ -421,8 +455,12 @@ function M:Send(textOverride)
 		return
 	end
 	if self.mode == "new" then
-		if not self.newProject then
-			ns.Print("Pick a project for the new thread first.")
+		if self.pendingNew then
+			ns.Print("The agent is still starting. Wait for the result before trying again.")
+			return
+		end
+		if not ns.Store:CanLaunchProject(self.newProject) then
+			ns.Print(ns.Store.data.bridge.backend == "Herdr" and "Pick a configured launch project first. Herdr spaces are available for browsing without launch permission." or "Pick a project for the new thread first.")
 			return
 		end
 		ns.db.settings.lastProject = self.newProject
@@ -432,6 +470,15 @@ function M:Send(textOverride)
 	elseif ns.viewId and not textOverride and ns.Transcript:CustomAnswer(text) then
 		ns.db.drafts[ns.viewId] = nil
 	elseif ns.viewId then
+		local t = ns.Store:Thread(ns.viewId)
+		if t and not ns.Store:Can("send", t) then
+			ns.Print("This tab is read-only; use Herdr to interact with it.")
+			return
+		end
+		if t and not ns.Store:Can("busySend", t) and (t.s == "working" or t.s == "input") then
+			ns.Print("The agent is busy or needs input. Open Herdr, or wait until it is ready to reply.")
+			return
+		end
 		ns.Transport:Send("send", ns.viewId, text)
 		ns.Transcript:AddLocalEcho(ns.viewId, text)
 		ns.db.drafts[ns.viewId] = nil
@@ -469,6 +516,10 @@ function M:ShotHint()
 end
 
 function M:AttachScreenshot()
+	if not ns.Store:Can("images", ns.Store:Thread(ns.viewId)) then
+		ns.Print("Screenshots are not supported by this backend yet.")
+		return
+	end
 	local key = self:ShotKey()
 	if not key then
 		ns.Print("Open a thread (or start a new one) first, then attach the screenshot.")
@@ -489,8 +540,8 @@ function M:Report(note)
 	if not ns.viewId and self.mode ~= "new" then self:StartNewThread() end
 	local T = ns.Transport
 	local b = ns.Store.data.bridge or {}
-	local lines = { "--- T3 Code for World of Warcraft diagnostics ---" }
-	table.insert(lines, string.format("addon %s, bridge %s, T3 %s (%s)", ns.version, b.version or "?", b.t3 or "?", b.server or "?"))
+	local lines = { "--- Herdr for World of Warcraft diagnostics ---" }
+	table.insert(lines, string.format("addon %s, bridge %s, backend %s: %s (%s)", ns.version, b.version or "?", b.backend or "?", b.t3 or "?", b.server or "?"))
 	table.insert(lines, string.format("link %s, signals %s via %s, live updates left %d/%d, queued %d", T:BridgeState(), T.signals, tostring(T.channel), T:SlotsLeft(), T.slotCount, #T.queue))
 	if b.envs then
 		local m = {}
@@ -516,8 +567,43 @@ function M:ApplyScale()
 	if not self.frame then return end
 	local pref = ns.db.settings.windowScale or "auto"
 	local scale = SCALES[pref] or ((ns.Gamepad and ns.Gamepad:IsActive()) and 1.15 or 1)
-	self.frame:SetScale(scale)
+	local f = self.frame
+	local fullscreen = ns.db.settings.fullscreen
+	f:StopMovingOrSizing()
+	f:SetScale(scale)
+	f:SetMovable(not fullscreen)
+	f:ClearAllPoints()
+	if fullscreen then
+		f:SetSize(UIParent:GetWidth() / scale, UIParent:GetHeight() / scale)
+		f:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+	else
+		f:SetSize(WIDTH, HEIGHT)
+		local wp = ns.db.settings.windowPoint
+		if wp then
+			f:SetPoint(wp[1], UIParent, wp[2], wp[3], wp[4])
+		else
+			f:SetPoint("CENTER", 0, 20)
+		end
+	end
+	f.Subtitle:SetWidth(f:GetWidth() - 220)
+	f.Status:SetWidth(f:GetWidth() - 220)
+	for i, tab in ipairs(f.Tabs) do
+		tab:ClearAllPoints()
+		if fullscreen then
+			tab:SetPoint("TOPRIGHT", f, "TOPRIGHT", -4, -70 - (i - 1) * 48)
+		else
+			tab:SetPoint("TOPLEFT", f, "TOPRIGHT", 0, -36 - (i - 1) * 48)
+		end
+	end
+	for _, page in pairs(f.Pages) do
+		page:ClearAllPoints()
+		page:SetPoint("TOPLEFT", f.Inset, "TOPLEFT")
+		page:SetPoint("BOTTOMRIGHT", f.Inset, "BOTTOMRIGHT", fullscreen and -44 or 0, 0)
+	end
 end
+
+ns:RegisterEvent("DISPLAY_SIZE_CHANGED", function() M:ApplyScale() end)
+ns:RegisterEvent("UI_SCALE_CHANGED", function() M:ApplyScale() end)
 
 function M:ToggleDictation()
 	if self.dictating then
@@ -537,20 +623,21 @@ end
 
 local LINK_TEXT = {
 	connected = { "green", "Connected" },
-	waiting = { "orange", "Waiting for the bridge… (run t3code-wow install on your desktop)" },
-	stale = { "red", "Bridge not responding — is t3code-wow running?" },
-	t3offline = { "red", "Bridge connected, but T3 Code is offline" },
+	waiting = { "orange", "Waiting for the bridge… (run herdr-wow install on your desktop)" },
+	stale = { "red", "Bridge not responding — is herdr-wow running?" },
+	t3offline = { "red", "Bridge connected, but the agent backend is offline" },
 	exhausted = { "orange", "Live updates paused — /reload to resume" },
 }
 
 function M:StatusLine()
 	local T = ns.Transport
 	if T.slotError == "MISSING" then
-		return ns.Color("red", "Live-update files missing — run t3code-wow install, then restart WoW")
+		return ns.Color("red", "Live-update files missing — run herdr-wow install, then restart WoW")
 	end
 	local state = T:BridgeState()
 	local entry = LINK_TEXT[state] or LINK_TEXT.waiting
-	local text = ns.Color(entry[1], entry[2])
+	local backend = ns.Store.data.bridge.backend or "the agent backend"
+	local text = ns.Color(entry[1], state == "t3offline" and ("Bridge connected, but " .. backend .. " is offline") or entry[2])
 	if #T.queue > 0 then
 		text = text .. ns.Color("grey", "  ·  sending…")
 	end
@@ -583,6 +670,8 @@ function M:Refresh()
 	local right = f.Pages.threads.Right
 	local header = right.Header
 	local t = ns.Store:Thread(ns.viewId)
+	local pending = ns.Store:View() and ns.Store:View().pending
+	local questionText = pending and pending.kind == "terminal-question" and pending.textInput and not (ns.Transcript.answered and ns.Transcript.answered[pending.id])
 	if self.mode == "new" then
 		f.Subtitle:SetText("New Thread")
 		header.Text:SetText(ns.Color("gold", "Start a new thread in"))
@@ -606,23 +695,35 @@ function M:Refresh()
 		f.Bar.Send:SetText("Send")
 		if t then
 			f.Subtitle:SetText(t.title)
-			local status = ns.Color(ns.Store.StatusColor(t.s), ns.Store.StatusText(t.s))
+			local status = ns.Color(ns.Store.StatusColor(t.s), t.kind == "terminal" and "Terminal" or ns.Store.StatusText(t.s))
 			local age = (t.s == "working" and t.st) and ns.Duration(time() - t.st) or ns.Ago(t.u)
 			header.Text:SetText(string.format("%s  ·  %s  ·  %s", status, ns.Store:ProjectName(t.p), age))
-			header.Action:SetShown(true)
+			header.Action:SetShown(ns.Store:Can("settle", t))
 			header.Action:SetText(t.s == "settled" and "Reopen" or "Settle")
-			header.Archive:SetShown(t.s == "settled")
+			header.Archive:SetShown(t.s == "settled" and ns.Store:Can("archive", t))
 			header.Text:SetPoint("RIGHT", t.s == "settled" and -200 or -110, 0)
-			self.composer:SetDefaultText(t.s == "working" and "Queue a follow-up  (Shift+Enter for a new line)" or "Message the agent  (Shift+Enter for a new line)")
+			if not ns.Store:Can("send", t) then
+				self.composer:SetDefaultText("Read-only tab. Use Herdr to interact with it.")
+			elseif questionText then
+				self.composer:SetDefaultText("Enter answer text, then review and submit with the question controls")
+			elseif (t.s == "working" or t.s == "input") and not ns.Store:Can("busySend", t) then
+				self.composer:SetDefaultText("The agent is busy or needs input. Use Herdr or wait until it is ready.")
+			else
+				self.composer:SetDefaultText(t.s == "working" and "Queue a follow-up  (Shift+Enter for a new line)" or "Message the agent  (Shift+Enter for a new line)")
+			end
 		else
-			f.Subtitle:SetText(ns.Color("grey", "No thread selected"))
-			header.Text:SetText(ns.Color("grey", "Pick a thread on the left, or start a new one"))
+			local herdr = ns.Store.data.bridge.backend == "Herdr"
+			f.Subtitle:SetText(ns.Color("grey", herdr and ns.Store:ProjectName(ns.db.settings.project) or "No thread selected"))
+			header.Text:SetText(ns.Color("grey", herdr and "Choose a tab above, or select a space" or "Pick a thread on the left, or start a new one"))
 			header.Action:Hide()
 			header.Archive:Hide()
 		end
 		right.Hint:SetText(self:ShotHint() or (ns.Gamepad and ns.Gamepad:IsActive() and ns.Gamepad:HintText()) or "")
 	end
-	f.Bar.Stop:SetEnabled(t ~= nil and t.s == "working" and self.mode ~= "new")
+	local busy = t and (t.s == "working" or t.s == "input") and not ns.Store:Can("busySend", t) and not questionText
+	f.Bar.Send:SetEnabled(self.mode == "new" and ns.Store:CanLaunchProject(self.newProject) and not self.pendingNew or self.mode ~= "new" and t ~= nil and ns.Store:Can("send", t) and not busy)
+	f.Bar.Shot:SetEnabled(ns.Store:Can("images", t))
+	f.Bar.Stop:SetEnabled(t ~= nil and t.s == "working" and self.mode ~= "new" and ns.Store:Can("stop", t))
 	f.Bar.Stop.Icon:SetDesaturated(not f.Bar.Stop:IsEnabled())
 	f.Bar.Mic.Icon:SetVertexColor(self.dictating and 1 or 1, self.dictating and 0.3 or 1, self.dictating and 0.3 or 1)
 	f.Bar.Back:SetEnabled(self.mode == "new" or ns.viewId ~= nil or not f.Pages.threads.Left:IsShown())
@@ -633,7 +734,9 @@ end
 
 function M:SetupProjectDropdown()
 	local options = {}
-	for _, p in ipairs(ns.Store.data.projects) do table.insert(options, { value = p.id, label = p.name }) end
+	for _, p in ipairs(ns.Store.data.projects) do
+		if ns.Store:CanLaunchProject(p.id) then table.insert(options, { value = p.id, label = p.name }) end
+	end
 	self.frame.Pages.threads.Right.Header.Project:SetOptions(options, M.newProject)
 end
 
@@ -641,16 +744,34 @@ end
 
 function M:Open()
 	self:Create()
+	if ns.ThreadList:DefaultSpace() and not ns.viewId and self.mode ~= "new" then
+		ns.ThreadList:SelectSpace(ns.db.settings.project)
+	end
 	if not self.frame:IsShown() then self.frame:Show() end
 end
 
 function M:Toggle()
 	self:Create()
-	self.frame:SetShown(not self.frame:IsShown())
+	if self.frame:IsShown() then self.frame:Hide() else self:Open() end
 end
 
 ns:On("Login", function()
 	M:Create()
+end)
+
+-- Only observe a manually started cast; never cast, interact with the bobber,
+-- or infer a bite from the channel ending. Compare names for Fishing ranks.
+ns:RegisterEvent("UNIT_SPELLCAST_CHANNEL_START", function(unit, _, spellID)
+	if unit ~= "player" or not ns.db or not ns.db.settings.openAfterFishingCast or ns.InCombat() then return end
+	local fishing = spellID == 7620
+	if not fishing and type(spellID) == "number" then
+		local getName = C_Spell and C_Spell.GetSpellName or GetSpellInfo
+		if getName then
+			local name, fishingName = getName(spellID), getName(7620)
+			fishing = name ~= nil and fishingName ~= nil and name == fishingName
+		end
+	end
+	if fishing then M:Open() end
 end)
 -- Dictation results arrive in the snapshot; type them into the message box.
 function M:HandleDictation(d)
@@ -705,14 +826,19 @@ end)
 ns:On("CommandResult", function(r)
 	if r.ok == false and r.msg then
 		ns.Print(ns.Color("red", r.msg))
-		if UIErrorsFrame then UIErrorsFrame:AddMessage("T3 Code: " .. r.msg, 1, 0.2, 0.2) end
+		if UIErrorsFrame then UIErrorsFrame:AddMessage(ns.title .. ": " .. r.msg, 1, 0.2, 0.2) end
 	end
 	if r.id == M.pendingNew then
 		M.pendingNew = nil
 		if r.ok and r.open then
 			M.mode = "thread"
 			M:SelectThread(r.open)
+		elseif not r.ok and M.pendingNewText then
+			ns.db.drafts.__new = M.pendingNewText
+			if M.mode == "new" and M.composer:GetInputText() == "" then M:LoadDraft() end
 		end
+		M.pendingNewText = nil
+		M:Refresh()
 	end
 end)
 

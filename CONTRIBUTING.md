@@ -2,7 +2,7 @@
 
 Contributions are welcome. This is an early, experimental release, so bug reports from real use are just as valuable as code.
 
-The supported setup is **Omarchy 4.5.0**, **T3 Code Nightly** and **World of Warcraft: Forever** under Proton. Changes that make other setups work are welcome, as long as they don't break that one.
+This fork brands the addon as **Herdr** and adds experimental native macOS support. Its original setup, **Omarchy 4.5.0**, **T3 Code Nightly** and **World of Warcraft: Forever** under Proton, remains supported. Keep both backends working and preserve the measured transport and controller constraints. See [docs/HERDR.md](docs/HERDR.md) for the current Herdr feature boundaries and verification gaps.
 
 ## Issues
 
@@ -10,9 +10,9 @@ Open an issue for a bug you can reproduce, or for a specific idea. Keep it detai
 
 For a bug, include:
 
-- **Versions**: Omarchy (`omarchy-version`), T3 Code Nightly (`t3 --version`), t3code-wow (`t3code-wow status`), and your controller if it's involved.
+- **Versions**: your OS, Herdr (`herdr --version`), the bridge (`herdr-wow status`), Forever, and your controller if involved. Include T3 Code (`t3 --version`) and Omarchy (`omarchy-version`) when using that backend/setup.
 - **What you did, what you expected, what happened instead.** Steps to reproduce if you have them.
-- **`t3code-wow status --log`** output, and the text from `/t3 report` in game.
+- **`herdr-wow status --log`** output, and the text from `/herdr report` in game. Inspect screenshots and logs for private information before sharing.
 - **A screenshot or short video** for anything you can see: a layout problem, a wrong state, a notice that didn't appear. It's often the fastest way to explain the problem.
 
 One problem per issue. If you're not sure it's a bug, say so and describe what you saw.
@@ -29,12 +29,12 @@ One problem per issue. If you're not sure it's a bug, say so and describe what y
 ## Development
 
 ```bash
-git clone https://github.com/ryanrhughes/t3code-wow
+git clone https://github.com/CodyBontecou/t3code-wow
 cd t3code-wow
-./install.sh                 # installs the addon and the bridge from your checkout
+./install.sh --backend herdr --no-service  # installs this checkout; run herdr-wow run afterward
 ```
 
-After editing, run `./install.sh` from your checkout, then `/reload` in game. It copies your checkout over the installed copy, puts the addon into the game and restarts the bridge. (`t3code-wow sync` only re-copies the *installed* addon, so it won't pick up your edits.) New files inside the addon load on `/reload`; new addon folders (such as live-update slots) need a full game restart.
+After editing, run `./install.sh` from your checkout, then `/reload` in game. It copies your checkout over the installed copy, puts the addon into the game and restarts the bridge. (`herdr-wow sync` only re-copies the *installed* addon, so it won't pick up your edits.) New files inside the addon load on `/reload`; new addon folders (such as live-update slots) need a full game restart.
 
 Tests:
 

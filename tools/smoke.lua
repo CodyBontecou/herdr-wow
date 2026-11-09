@@ -75,6 +75,45 @@ check(#rows > 0, "transcript rendered " .. #rows .. " elements")
 local listRows = ns.ThreadList.scrollBox._rows or {}
 check(#listRows > 0, "thread list rendered " .. #listRows .. " rows")
 
+-- Fishing mode observes manual casts without opening for other channels/units.
+do
+	local f = ns.Main.frame
+	f:Hide()
+	Stub.Fire("UNIT_SPELLCAST_CHANNEL_START", "player", "cast", 7620)
+	check(not f:IsShown(), "fishing does not reopen by default")
+	local fishingCheck
+	for _, cb in ipairs(ns.Settings.checks) do
+		if cb.key == "openAfterFishingCast" then fishingCheck = cb end
+	end
+	fishingCheck:SetChecked(true)
+	fishingCheck._scripts.OnClick(fishingCheck)
+	Stub.Fire("UNIT_SPELLCAST_CHANNEL_START", "party1", "cast", 7620)
+	Stub.Fire("UNIT_SPELLCAST_CHANNEL_START", "player", "cast", 12345)
+	check(not f:IsShown(), "fishing ignores other players and unrelated spells")
+	local oldCombat = InCombatLockdown
+	_G.InCombatLockdown = function() return true end
+	Stub.Fire("UNIT_SPELLCAST_CHANNEL_START", "player", "cast", 7620)
+	check(not f:IsShown(), "fishing does not capture the window during combat")
+	_G.InCombatLockdown = oldCombat
+	local draft, selected = ns.Main.composer:GetText(), ns.viewId
+	Stub.Fire("UNIT_SPELLCAST_CHANNEL_START", "player", "cast", 7620)
+	check(f:IsShown() and ns.viewId == selected and ns.Main.composer:GetText() == draft, "manual fishing cast reopens without losing thread or draft")
+	f:Hide()
+	local oldSpell, oldCSpell = GetSpellInfo, C_Spell
+	_G.C_Spell = nil
+	_G.GetSpellInfo = function(id) return (id == 7620 or id == 7731) and "Localized Fishing" or "Other spell" end
+	Stub.Fire("UNIT_SPELLCAST_CHANNEL_START", "player", "cast", 7731)
+	check(f:IsShown(), "fishing recognizes other ranks by localized name")
+	_G.GetSpellInfo, _G.C_Spell = oldSpell, oldCSpell
+	f:Hide()
+	SlashCmdList.T3CODE("fishing off")
+	Stub.Fire("UNIT_SPELLCAST_CHANNEL_START", "player", "cast", 7620)
+	check(not f:IsShown(), "fishing reopening can be disabled")
+	ns.Settings:Refresh()
+	check(not fishingCheck:GetChecked(), "fishing checkbox reflects slash command changes")
+	ns.Main:Open()
+end
+
 -- Send a message: queued, echoed, and present in the strip payload.
 ns.Main.composer._text = "Please run the tests"
 ns.Main:Send()
@@ -111,6 +150,30 @@ for _, r in ipairs(ns.Transcript.scrollBox._rows) do
 	if r.ed.kind == "option" and r.ed.label == "Fast" then r.frame:Click() break end
 end
 check(ns.Transport:Payload():find("answer\031" .. ns.viewId .. "\031req1\031q1\031fast", 1, true) ~= nil, "answer command queued")
+
+-- Terminal questions keep navigation separate from submitting written text.
+local terminalThread = ns.Store:Thread(ns.viewId)
+local previousCaps, previousStatus = terminalThread.caps, terminalThread.s
+terminalThread.caps, terminalThread.s = { send = true, busySend = false, answers = true }, "input"
+data.view.pending = { id = "terminal-1", kind = "terminal-question", textInput = false, actions = { { key = "down", label = "Next option" }, { key = "enter", label = "Select / submit answer" } } }
+data.gen = data.gen + 1
+ns.Transport:Apply(data)
+check(not ns.Main.frame.Bar.Send:IsEnabled(), "question navigation does not enable ordinary busy prompts")
+for _, r in ipairs(ns.Transcript.scrollBox._rows) do
+	if r.ed.kind == "option" and r.ed.label == "Next option" then r.frame:Click() break end
+end
+check(ns.Transport:Payload():find("answer\031" .. ns.viewId .. "\031terminal-1\031key\031down", 1, true) ~= nil, "terminal navigation uses the answer channel")
+local terminalQueue = #ns.Transport.queue
+ns.Transcript:TerminalAnswer(data.view, data.view.pending, "key", "enter")
+check(#ns.Transport.queue == terminalQueue, "a consumed screen cannot submit again")
+data.view.pending = { id = "terminal-2", kind = "terminal-question", textInput = true, actions = { { key = "enter", label = "Select / submit answer" } } }
+data.gen = data.gen + 1
+ns.Transport:Apply(data)
+check(ns.Main.frame.Bar.Send:IsEnabled(), "question text field enables composer while agent is blocked")
+ns.Main.composer._text = "Literal answer"
+ns.Main:Send()
+check(ns.Transport:Payload():find("answer\031" .. ns.viewId .. "\031terminal-2\031text\031Literal answer", 1, true) ~= nil, "typed question text is not sent as an ordinary prompt or Enter")
+terminalThread.caps, terminalThread.s = previousCaps, previousStatus
 
 -- Dictation result from the bridge lands in the message box
 ns.Main.composer._text = "Hello"
@@ -177,12 +240,182 @@ _G.InCombatLockdown = function() return false end
 ns:Fire("Combat", false)
 check(#ns.Toasts.held == 0, "held notice shown after combat")
 
+-- Dismiss one notice without opening its thread; reflow the remaining stack.
+do
+	for _, frame in ipairs(ns.Toasts.frames) do frame:Hide() end
+	local originalView, originalOpen = ns.viewId, ns.windowOpen
+	ns.Toasts:Show(data.threads[1], "open")
+	ns.Toasts:Show(data.threads[2], "open")
+	local first, second = ns.Toasts.frames[1], ns.Toasts.frames[2]
+	check(first.Close and first.Close:IsShown(), "notification has a close button")
+	first.Close:Click()
+	check(not first:IsShown() and first.timer == nil, "close dismisses the notice and cancels its timer")
+	check(ns.viewId == originalView and ns.windowOpen == originalOpen, "close does not open or change the selected thread")
+	check(second:IsShown() and second._points[1][5] == -120, "remaining notice moves into the first stack position")
+	second:Click()
+	check(ns.viewId == data.threads[2].id and not second:IsShown(), "clicking the notice body still opens its thread")
+	ns.Main:SelectThread(originalView)
+end
+
+-- The master switch silences every automatic notice channel and drops queued
+-- combat notices, while preserving individual preferences for re-enabling.
+do
+	local s = ns.db.settings
+	local oldRead, oldVoice = s.autoRead, s.tts
+	s.autoRead, s.tts = true, "system"
+	ns.Toasts:Show(data.threads[2], "open")
+	ns.Toasts.held = { { t = data.threads[2], kind = "open" } }
+	local master, popup
+	for _, cb in ipairs(ns.Settings.checks) do
+		if cb.key == "notifications" then master = cb end
+		if cb.key == "toasts" then popup = cb end
+	end
+	check(master ~= nil, "notification master switch is available in settings")
+	master:SetChecked(false)
+	master:Click()
+	check(#ns.Toasts.held == 0 and not ns.Toasts:VisibleThread(), "disabling notifications clears active and queued popups")
+	check(not popup:IsEnabled() and not ns.Transport:Flags():find("r", 1, true), "disabled notifications turn off dependent controls and desktop auto-read")
+	local printed, sounds = #Stub.printed, #Stub.sounds
+	ns:Fire("ThreadTransition", data.threads[2], "working", "open")
+	_G.InCombatLockdown = function() return true end
+	ns:Fire("ThreadTransition", data.threads[2], "working", "input")
+	_G.InCombatLockdown = function() return false end
+	ns:Fire("Combat", false)
+	check(#Stub.printed == printed and #Stub.sounds == sounds and #ns.Toasts.held == 0, "disabled notifications do not print, play sounds or queue combat notices")
+	master:SetChecked(true)
+	master:Click()
+	check(popup:IsEnabled() and s.toasts and s.sounds and s.autoRead, "re-enabling preserves individual notice preferences")
+	check(ns.Transport:Flags():find("r", 1, true) ~= nil, "re-enabling restores configured desktop auto-read")
+	SlashCmdList.T3CODE("notifications off")
+	check(s.notifications == false, "slash command can disable notifications")
+	SlashCmdList.T3CODE("notifications on")
+	check(s.notifications == true and #ns.Toasts.held == 0, "slash command enables without replaying discarded notices")
+	s.autoRead, s.tts = oldRead, oldVoice
+end
+
+-- Closing requires confirmation tied to the original thread and tab identity.
+do
+	local t = ns.Store:Thread(ns.viewId)
+	local oldCaps, oldTab = t.caps, t.closeTabId
+	local oldId = ns.viewId
+	t.caps, t.closeTabId = { closeThread = true }, "w1:t1"
+	local queued = #ns.Transport.queue
+	T3Code_Binding("closeThread")
+	local popup = Stub.popup
+	check(popup and #ns.Transport.queue == queued, "close binding prompts without sending a command")
+	local accept = StaticPopupDialogs[popup.which].OnAccept
+	ns.viewId = "another-thread"
+	accept(nil, popup.data)
+	local cmd = ns.Transport.queue[#ns.Transport.queue]
+	check(cmd.verb == "closeThread" and cmd.args[1] == oldId and cmd.args[2] == "w1:t1", "confirmation closes its original tab, not a newly selected thread")
+	t.closeTabId = "w1:t2"
+	queued = #ns.Transport.queue
+	accept(nil, popup.data)
+	check(#ns.Transport.queue == queued, "confirmation refuses a moved tab")
+	ns.viewId = oldId
+	t.caps, t.closeTabId = nil, oldTab
+	Stub.popup = nil
+	T3Code_Binding("closeThread")
+	check(not Stub.popup and #ns.Transport.queue == queued, "backends without explicit close support cannot close tabs")
+	t.caps, t.closeTabId = oldCaps, oldTab
+end
+
+-- Import is explicit, conflict-aware, combat-safe and reversible.
+do
+	local oldImports = ns.importedBindings
+	ns.importedBindings = {
+		{ key = "ALT-CTRL-T", binding = "T3CODE_NEW" },
+		{ key = "ALT-CTRL-W", binding = "T3CODE_CLOSE_THREAD" },
+		{ key = "ALT-CTRL-J", binding = "T3CODE_NEXT_WORKSPACE" },
+		{ key = "ALT-CTRL-K", binding = "T3CODE_PREVIOUS_WORKSPACE" },
+	}
+	Stub.bindings["ALT-CTRL-T"] = "TOGGLEWORLDMAP"
+	local accept = StaticPopupDialogs.T3CODE_IMPORT_KEYS.OnAccept
+	SlashCmdList.T3CODE("importkeys")
+	local data = Stub.popup.data
+	check(data.rows[1].before == "TOGGLEWORLDMAP" and GetBindingAction("ALT-CTRL-T") == "TOGGLEWORLDMAP", "import preview records conflicts without changing keys")
+	local oldCombat = InCombatLockdown
+	_G.InCombatLockdown = function() return true end
+	accept(nil, data)
+	check(GetBindingAction("ALT-CTRL-T") == "TOGGLEWORLDMAP", "import confirmation cannot change keys in combat")
+	_G.InCombatLockdown = oldCombat
+	Stub.bindingSet = 2
+	accept(nil, data)
+	check(GetBindingAction("ALT-CTRL-T") == "TOGGLEWORLDMAP", "import refuses a different active binding set")
+	Stub.bindingSet = 1
+	Stub.bindings["ALT-CTRL-T"] = "TOGGLEBAG1"
+	accept(nil, data)
+	check(GetBindingAction("ALT-CTRL-T") == "TOGGLEBAG1", "import refuses conflicts changed during confirmation")
+	SlashCmdList.T3CODE("importkeys")
+	data = Stub.popup.data
+	Stub.failBinding = "ALT-CTRL-W"
+	accept(nil, data)
+	check(GetBindingAction("ALT-CTRL-T") == "TOGGLEBAG1" and GetBindingAction("ALT-CTRL-W") == "", "failed import rolls back partial changes")
+	Stub.failBinding = nil
+	accept(nil, data)
+	check(GetBindingAction("ALT-CTRL-T") == "T3CODE_NEW" and GetBindingAction("ALT-CTRL-W") == "T3CODE_CLOSE_THREAD" and Stub.savedBindingSet == 1, "confirmed import saves the active set")
+	check(GetBindingAction("ALT-CTRL-J") == "T3CODE_NEXT_WORKSPACE" and GetBindingAction("ALT-CTRL-K") == "T3CODE_PREVIOUS_WORKSPACE", "import accepts workspace shortcuts")
+	local backup = ns.db.bindingImportBackup
+	SlashCmdList.T3CODE("importkeys")
+	check(ns.db.bindingImportBackup == backup, "repeating an unchanged import preserves undo backup")
+	Stub.bindings["ALT-CTRL-T"] = "TOGGLEWORLDMAP"
+	SlashCmdList.T3CODE("undokeys")
+	check(GetBindingAction("ALT-CTRL-T") == "TOGGLEWORLDMAP" and ns.db.bindingImportBackup == backup, "undo does not overwrite newer user bindings")
+	Stub.bindings["ALT-CTRL-T"] = "T3CODE_NEW"
+	SlashCmdList.T3CODE("undokeys")
+	check(GetBindingAction("ALT-CTRL-T") == "TOGGLEBAG1" and GetBindingAction("ALT-CTRL-W") == "" and not ns.db.bindingImportBackup, "undo restores previous bindings and unbound keys")
+	Stub.popup = nil
+	ns.importedBindings = { { key = "CTRL-ALT-J", binding = "T3CODE_NEXT_WORKSPACE" } }
+	SlashCmdList.T3CODE("importkeys")
+	check(not Stub.popup, "import rejects noncanonical modifier order that WoW cannot dispatch")
+	ns.importedBindings = { { key = "ALT-CTRL-X", binding = "UNSAFE_ACTION" } }
+	SlashCmdList.T3CODE("importkeys")
+	check(not Stub.popup, "import rejects actions outside its allowlist")
+	ns.importedBindings = oldImports
+	Stub.bindings["ALT-CTRL-T"] = nil
+end
+
+-- Thread bindings follow displayed order and wrap, preserving per-thread drafts.
+do
+	local oldId = ns.viewId
+	local ids = {}
+	ns.ThreadList:Refresh(true)
+	for _, r in ipairs(ns.ThreadList.scrollBox._rows) do
+		if r.ed.thread then table.insert(ids, r.ed.thread.id) end
+	end
+	check(#ids > 1, "navigation fixture has multiple threads")
+	ns.Main:SelectThread(ids[#ids])
+	ns.Main.composer:SetText("navigation draft")
+	ns.Main.frame:Hide()
+	T3Code_Binding("nextThread")
+	check(ns.viewId == ids[1] and ns.windowOpen, "next thread wraps and opens the window")
+	T3Code_Binding("previousThread")
+	check(ns.viewId == ids[#ids] and ns.Main.composer:GetText() == "navigation draft", "previous thread wraps and restores draft")
+	ns.Main.composer:SetText("")
+	ns.Main:Back()
+	T3Code_Binding("previousThread")
+	check(ns.viewId == ids[#ids], "previous thread with no selection starts at the last row")
+	ns.Main:Back()
+	T3Code_Binding("nextThread")
+	check(ns.viewId == ids[1], "next thread with no selection starts at the first row")
+	local collapsed = ns.db.settings.collapsed
+	local oldWorking, oldOpen, oldSettled = collapsed.working, collapsed.open, collapsed.settled
+	collapsed.working, collapsed.open, collapsed.settled = true, true, true
+	T3Code_Binding("nextThread")
+	check(ns.viewId == ids[1], "navigation skips collapsed groups and leaves empty lists alone")
+	collapsed.working, collapsed.open, collapsed.settled = oldWorking, oldOpen, oldSettled
+	ns.Main:SelectThread(oldId)
+end
+
 -- Search and machine filter
 ns.ThreadList.query = "zzzz-no-match"
 ns.ThreadList:Refresh(true)
 local threadRows = 0
 for _, r in ipairs(ns.ThreadList.scrollBox._rows) do if r.ed.thread then threadRows = threadRows + 1 end end
 check(threadRows == 0, "search hides non-matching threads")
+local beforeNavigation = ns.viewId
+T3Code_Binding("nextThread")
+check(ns.viewId == beforeNavigation, "thread binding respects search with no results")
 ns.ThreadList.query = nil
 local groups = ns.Store:Groups("m:local")
 check(#groups.working + #groups.open + #groups.settled > 0, "machine filter (this computer) keeps local threads")
@@ -214,7 +447,31 @@ check(true, "self-test ran")
 ns.db.settings.windowScale = "xlarge"
 ns.Main:ApplyScale()
 check(true, "window scale applied")
+do
+	local f = ns.Main.frame
+	local savedPoint = { "TOPLEFT", "TOPLEFT", 30, -40 }
+	local oldPoint = ns.db.settings.windowPoint
+	ns.db.settings.windowPoint = savedPoint
+	local checkbox
+	for _, cb in ipairs(ns.Settings.checks) do
+		if cb.key == "fullscreen" then checkbox = cb end
+	end
+	checkbox:SetChecked(true)
+	checkbox._scripts.OnClick(checkbox)
+	check(math.abs(f:GetWidth() * f:GetScale() - UIParent:GetWidth()) < 0.01 and math.abs(f:GetHeight() * f:GetScale() - UIParent:GetHeight()) < 0.01, "fullscreen fills the parent at extra-large scale")
+	check(ns.db.settings.windowPoint == savedPoint, "fullscreen preserves saved window position")
+	local oldWidth = UIParent._w
+	UIParent._w = 1920
+	Stub.Fire("DISPLAY_SIZE_CHANGED")
+	check(math.abs(f:GetWidth() * f:GetScale() - 1920) < 0.01, "fullscreen follows display size changes")
+	UIParent._w = oldWidth
+	checkbox:SetChecked(false)
+	checkbox._scripts.OnClick(checkbox)
+	check(f:GetWidth() == 940 and f:GetHeight() == 640 and f:GetScale() == 1.3, "leaving fullscreen restores normal dimensions and preferred scale")
+	ns.db.settings.windowPoint = oldPoint
+end
 ns.db.settings.windowScale = "auto"
+ns.Main:ApplyScale()
 
 -- Transitions -> toast
 local t = ns.Store.data.threads[1]
@@ -294,6 +551,15 @@ down(f, "PADDDOWN")
 for _, r in ipairs(ns.Transcript.scrollBox._rows) do if r.frame == ns.Gamepad.selected then selEd = r.ed end end
 check(selEd and selEd.label == "Two", "Down steps to the next answer")
 data.gen = data.gen + 1
+data.view.pending = { id = "terminal-pad", kind = "terminal-question", actions = { { key = "tab", label = "Open questions" } } }
+ns.Transport:Apply(data)
+ns.Gamepad:Highlight(rowFor(ns.viewId))
+down(f, "PADDRIGHT")
+for _, r in ipairs(ns.Transcript.scrollBox._rows) do if r.frame == ns.Gamepad.selected then selEd = r.ed end end
+check(selEd and selEd.label == "Open questions", "controller reaches the terminal question controls")
+down(f, "PAD1")
+check(ns.Transport:Payload():find("answer\031" .. ns.viewId .. "\031terminal-pad\031key\031tab", 1, true) ~= nil, "controller activates a terminal question action")
+data.gen = data.gen + 1
 data.view.pending = nil
 ns.Transport:Apply(data)
 -- A on the project dropdown opens a real list; the cursor moves inside it
@@ -335,7 +601,7 @@ check(ns.Launcher.chord == "PADLTRIGGER-PADRTRIGGER-PADBACK", "controller shortc
 check(next(Stub.overrides) == nil, "no key bindings overridden (Forever's controller mode ignores them)")
 GameMenuFrame:InitButtons()
 local entry
-for _, b in ipairs(GameMenuFrame.buttons) do if b.text == "T3 Code" then entry = b end end
+for _, b in ipairs(GameMenuFrame.buttons) do if b.text == ns.title then entry = b end end
 check(entry and entry.layoutIndex == 4.5, "game menu entry sits above Log Out")
 _G.HideUIPanel = function() end
 entry.cb()
@@ -343,6 +609,26 @@ check(f._shown, "game menu entry opens the window")
 T3Code_Binding("toggle")
 check(not f._shown, "shortcut toggles it closed")
 check(#(ns.db.errors or {}) == 0, "no errors recorded")
+
+-- Both the branded command and the old alias route to the same UI without
+-- replacing the saved settings or existing binding IDs.
+do
+	local settings = ns.db.settings
+	for _, alias in ipairs({ "/herdr", "/t3" }) do
+		local handler
+		for command, fn in pairs(SlashCmdList) do
+			for i = 1, 4 do
+				if _G["SLASH_" .. command .. i] == alias then handler = fn end
+			end
+		end
+		check(handler ~= nil, alias .. " has a registered handler")
+		local shown = ns.windowOpen
+		handler("")
+		check(ns.windowOpen ~= shown, alias .. " toggles the existing window")
+		handler("")
+		check(ns.windowOpen == shown and ns.db.settings == settings, alias .. " preserves window state and saved settings")
+	end
+end
 
 -- Slash command
 SlashCmdList.T3CODE("status")
@@ -428,7 +714,7 @@ do
 	check(ns.windowOpen == wasOpen, "holding the triggers alone does nothing (LT + RT action bars stay the game's)")
 	WOWSTUB.padHeld.PADBACK = true
 	frame()
-	check(ns.windowOpen ~= wasOpen, "triggers + Back toggles T3 Code")
+	check(ns.windowOpen ~= wasOpen, "triggers + Back toggles Herdr")
 	frame()
 	frame()
 	check(ns.windowOpen ~= wasOpen, "holding Back doesn't toggle it again")
@@ -487,6 +773,98 @@ do
 	check(mb._shown == false, "minimap button can be hidden")
 	ns.db.settings.minimapButton = true
 	ns.MinimapButton:Refresh()
+end
+
+-- Herdr capabilities and delayed launch results: no unsupported controls, no
+-- duplicate launch, and a failed startup restores the original prompt.
+do
+	local caps = { images = false, stop = false, settle = false, archive = false, busySend = false }
+	local th = { id = "herdr-test", title = "Main · Pi", p = "space:test", s = "working", l = "Working", caps = caps }
+	data.gen = 9e15 + 100
+	data.threads = { th }
+	data.projects = {
+		{ id = "pi-project", name = "Pi launch project", launch = true, browse = false, filterId = "space:test" },
+		{ id = "space:test", name = "Development", act = true, browse = true, launch = false },
+		{ id = "space:empty", name = "Empty space", act = true, browse = true, launch = false },
+	}
+	data.bridge = { t3 = "connected", backend = "Herdr", caps = caps }
+	data.view = { id = th.id, msgs = { { r = "a", t = "Recent terminal output" } }, note = "Recent Pi terminal output, not full conversation history." }
+	ns.Transport:Apply(data)
+	ns.Main:SelectThread(th.id)
+	ns.Main:Open()
+	ns.Main:Refresh()
+	check(ns.ThreadList.tabs:IsShown(), "Herdr shows top tab navigation")
+	local spaces = {}
+	for i = 1, ns.ThreadList.scrollBox:GetDataProviderSize() do
+		local ed = ns.ThreadList.scrollBox:FindElementData(i)
+		if ed.space then spaces[ed.space.id] = true end
+		check(not ed.thread, "Herdr sidebar contains spaces instead of thread rows")
+	end
+	check(spaces["space:empty"] and not spaces["pi-project"], "space sidebar includes empty spaces but excludes launch aliases")
+	ns.ThreadList:SelectSpace("space:empty")
+	check(ns.viewId == nil and not ns.ThreadList.tabs.buttons[1]:IsShown(), "empty space clears the view and has no tabs")
+	ns.ThreadList:SelectSpace("space:test")
+	check(ns.viewId == th.id and ns.ThreadList.tabs.buttons[1].thread.id == th.id, "space selection opens its first tab")
+	check(not ns.Main.frame.Bar.Stop:IsEnabled(), "Herdr stop is disabled")
+	check(not ns.Main.frame.Bar.Shot:IsEnabled(), "Herdr screenshots are disabled")
+	check(not ns.Main.frame.Pages.threads.Right.Header.Action:IsShown(), "Herdr settle is hidden")
+	local count = #ns.Transport.queue
+	ns.Main:Send("Do not send while busy")
+	check(#ns.Transport.queue == count, "busy Herdr prompt is not queued")
+	th.s = "open"
+	ns.db.settings.project = "pi-project"
+	ns.ThreadList:Refresh(true)
+	check(ns.db.settings.project == "space:test", "old project filters migrate to their space")
+	check(#ns.ThreadList.dropdown.options == 3, "space filter includes empty spaces but not launch aliases")
+	ns.Main.composer:SetText("workspace navigation draft")
+	ns.ThreadList.query = "zzzz-no-match"
+	ns.Main:ShowPage("usage")
+	ns.Main.frame:Hide()
+	T3Code_Binding("nextWorkspace")
+	check(ns.db.settings.project == "space:empty" and ns.windowOpen and ns.Main.page == "threads", "next workspace opens the space filter including empty spaces")
+	check(ns.viewId == th.id and ns.Main.composer:GetText() == "workspace navigation draft" and ns.ThreadList.query == "zzzz-no-match", "workspace switching preserves conversation, draft and search")
+	T3Code_Binding("nextWorkspace")
+	check(ns.db.settings.project == "space:test", "next workspace wraps without visiting launch aliases or all-spaces")
+	T3Code_Binding("previousWorkspace")
+	check(ns.db.settings.project == "space:empty", "previous workspace wraps in reverse")
+	ns.db.settings.project = "all"
+	T3Code_Binding("nextWorkspace")
+	check(ns.db.settings.project == "space:test", "next workspace from all-spaces selects the first browse space")
+	ns.db.settings.project = "m:local"
+	T3Code_Binding("previousWorkspace")
+	check(ns.db.settings.project == "space:empty", "previous workspace from a machine filter selects the last browse space")
+	local projects = data.projects
+	data.projects = {}
+	ns.Store:Apply(data)
+	T3Code_Binding("nextWorkspace")
+	check(ns.db.settings.project == "all", "no browse spaces leaves the filter at all-spaces")
+	data.projects = projects
+	ns.Store:Apply(data)
+	ns.ThreadList.query = nil
+	ns.Main.composer:SetText("")
+	ns.Main:StartNewThread("space:empty")
+	check(ns.Main.newProject == "pi-project", "browsed spaces cannot become arbitrary launch destinations")
+	check(#ns.Main.frame.Pages.threads.Right.Header.Project.options == 1, "new-thread dropdown only lists allowlisted launch projects")
+	ns.Main.composer:SetText("Start this Pi task")
+	ns.Main:Send()
+	local pending = ns.Main.pendingNew
+	count = #ns.Transport.queue
+	ns.Main:Send("Duplicate")
+	check(#ns.Transport.queue == count and ns.Main.pendingNew == pending, "pending startup cannot be submitted twice")
+	ns:Fire("CommandResult", { id = pending, ok = false, msg = "Startup timed out; inspect Herdr" })
+	check(ns.Main.composer:GetInputText() == "Start this Pi task", "failed startup restores the prompt")
+	check(ns.Main.pendingNew == nil, "failed startup clears pending state")
+	th.kind, th.caps = "terminal", { send = false }
+	ns.Main:SelectThread(th.id)
+	ns.Main:Refresh()
+	check(not ns.Main.frame.Bar.Send:IsEnabled(), "shell tab Send is disabled")
+	count = #ns.Transport.queue
+	ns.Main:Send("must not execute in a shell")
+	check(#ns.Transport.queue == count, "shell tabs cannot receive a prompt through keyboard or controller send")
+	data.projects = { data.projects[2], data.projects[3] }
+	ns.Store:Apply(data)
+	ns.Main:StartNewThread("space:empty")
+	check(ns.Main.newProject == nil and not ns.Main.frame.Bar.Send:IsEnabled(), "browse-only spaces cannot start an agent without launch configuration")
 end
 
 -- Exhaustion

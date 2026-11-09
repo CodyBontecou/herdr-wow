@@ -47,6 +47,7 @@ local GETTERS = {
 }
 
 local SETTERS = {
+	SetScale = function(self, scale) self._scale = scale end,
 	SetWidth = function(self, w) self._w = w end,
 	SetHeight = function(self, h) self._h = h end,
 	SetSize = function(self, w, h) self._w, self._h = w, h end,
@@ -219,6 +220,11 @@ _G.InCombatLockdown = function() return false end
 _G.IsShiftKeyDown = function() return false end
 _G.PlaySound = function(id) table.insert(Stub.sounds, id) end
 _G.StopSound = noop
+_G.StaticPopupDialogs = {}
+_G.StaticPopup_Show = function(which, textArg1, textArg2, data)
+	Stub.popup = { which = which, data = data }
+	return Stub.popup
+end
 _G.ReloadUI = function() Stub.reloaded = true end
 _G.GetPhysicalScreenSize = function() return 3840, 2160 end
 _G.CreateAtlasMarkup = function(a) return "|A:" .. tostring(a) .. "|a" end
@@ -323,7 +329,16 @@ Stub.overrides = {}
 _G.ClearOverrideBindings = function() Stub.overrides = {} end
 _G.SetOverrideBinding = function(_, _, key, action) Stub.overrides[key] = action end
 _G.GetBindingKey = function() return nil end
-_G.GetBindingAction = function(key) return Stub.overrides[key] or (key == "CTRL-SHIFT-PADBACK" and "TOGGLEWORLDMAP" or "") end
+Stub.bindings = {}
+Stub.bindingSet = 1
+_G.GetBindingAction = function(key) return Stub.overrides[key] or Stub.bindings[key] or (key == "CTRL-SHIFT-PADBACK" and "TOGGLEWORLDMAP" or "") end
+_G.GetCurrentBindingSet = function() return Stub.bindingSet end
+_G.SetBinding = function(key, command)
+	if Stub.failBinding == key then return false end
+	Stub.bindings[key] = command
+	return true
+end
+_G.SaveBindings = function(set) Stub.savedBindingSet = set end
 _G.hooksecurefunc = function(t, name, fn)
 	if type(t) == "string" then t, name, fn = _G, t, name end
 	local old = t[name]

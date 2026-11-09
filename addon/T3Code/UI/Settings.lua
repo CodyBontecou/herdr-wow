@@ -7,16 +7,19 @@ local S = {}
 ns.Settings = S
 
 local CHECKS = {
-	{ key = "tracker", label = "Show T3 Code in the tracker area", after = function() ns.Tracker:Refresh() end },
+	{ key = "fullscreen", label = "Fullscreen window", tip = "Fill the screen. Turn this off to restore the normal window and its saved position.", after = function() ns.Main:ApplyScale() end },
+	{ key = "openAfterFishingCast", column = "right", label = "Reopen Herdr after casting Fishing", tip = "Opens Herdr when you manually cast Fishing, except during combat. Does not detect bites, catch fish or recast." },
+	{ key = "tracker", label = "Show Herdr in the tracker area", after = function() ns.Tracker:Refresh() end },
 	{ key = "trackerAlways", label = "Keep its header when nothing is running", after = function() ns.Tracker:Refresh() end },
 	{ key = "trackerLocked", label = "Lock the tracker in place", after = function() ns.Tracker:Refresh() end },
-	{ key = "toasts", label = "Pop up a notice when a thread finishes or needs you" },
+	{ key = "notifications", label = "Enable notifications", tip = "Controls popups, notification sounds, chat notices and automatic read-aloud. Turning this off also clears current and queued popups. Manual read-aloud still works.", after = function() ns.Toasts:SetEnabled(ns.db.settings.notifications) end },
+	{ key = "toasts", label = "Pop up a notice when a thread finishes or needs you", after = function() ns.Toasts:RefreshSettings() end },
 	{ key = "sounds", label = "Play a sound with notices" },
 	{ key = "quietInstances", label = "Stay quiet in dungeons, raids and PvP", tip = "Notices and read-aloud wait until you're out. They always wait during combat.", after = function() ns.Transport:Touch() end },
 	{ key = "autoRead", label = "Read finished replies aloud", after = function() ns.Transport:Touch() end },
 	{ key = "dictateSend", label = "Send dictated messages right away" },
 	{ key = "quickReplies", label = "Show quick replies under finished threads", after = function() ns.Transcript:Refresh(true) end },
-	{ key = "gameMenu", label = "Add T3 Code to the game menu" },
+	{ key = "gameMenu", label = "Add Herdr to the game menu" },
 	{ key = "minimapButton", label = "Show the minimap button", after = function() ns.MinimapButton:Refresh() end },
 }
 
@@ -33,11 +36,11 @@ function S:Create(page)
 	title:SetPoint("TOPLEFT", 20, -16)
 	title:SetText("Settings")
 
-	local y = -48
+	local y, rightY = -48, -280
 	self.checks = {}
 	for _, c in ipairs(CHECKS) do
 		local cb = CreateFrame("CheckButton", nil, page, "UICheckButtonTemplate")
-		cb:SetPoint("TOPLEFT", 16, y)
+		cb:SetPoint("TOPLEFT", c.column == "right" and 474 or 16, c.column == "right" and rightY or y)
 		cb.Text:SetFontObject("GameFontHighlight")
 		cb.Text:SetText(c.label)
 		cb:SetScript("OnClick", function(self)
@@ -50,7 +53,7 @@ function S:Create(page)
 		cb.Text:SetWordWrap(false)
 		if c.tip then UI.Tooltip(cb, c.label, c.tip) end
 		table.insert(self.checks, cb)
-		y = y - 28
+		if c.column == "right" then rightY = rightY - 28 else y = y - 28 end
 	end
 
 	local voiceLabel = UI.Text(page, "GameFontHighlight")
@@ -67,7 +70,7 @@ function S:Create(page)
 	dd:SetOptions(options, ns.db.settings.tts)
 	self.voice = dd
 	local test = UI.Button(page, "Test voice", 110, function()
-		ns.Speak("Hello from T3 Code. This is how replies will sound.", "", "test")
+		ns.Speak("Hello from Herdr. This is how replies will sound.", "", "test")
 	end)
 	test:SetPoint("LEFT", dd, "RIGHT", 10, 0)
 	y = y - 40
@@ -125,7 +128,13 @@ local SIGNAL_TEXT = {
 
 function S:Refresh()
 	if not self.page then return end
-	for _, cb in ipairs(self.checks) do cb:SetChecked(ns.db.settings[cb.key] and true or false) end
+	local noticeControls = { toasts = true, sounds = true, quietInstances = true, autoRead = true }
+	for _, cb in ipairs(self.checks) do
+		cb:SetChecked(ns.db.settings[cb.key] and true or false)
+		local enabled = ns.db.settings.notifications ~= false or not noticeControls[cb.key]
+		cb:SetEnabled(enabled)
+		cb.Text:SetAlpha(enabled and 1 or 0.45)
+	end
 	self.voice.value = ns.db.settings.tts
 	self.voice:Update()
 	self.size.value = ns.db.settings.windowScale or "auto"
@@ -133,11 +142,12 @@ function S:Refresh()
 	local T = ns.Transport
 	local b = ns.Store.data.bridge or {}
 	local lines = {
-		"Bridge: " .. (b.version and ns.Color("green", "t3code-wow " .. b.version) or ns.Color("red", "not heard from")),
-		"T3 Code: " .. (b.t3 == "connected" and ns.Color("green", "connected" .. (b.server and (" (" .. b.server .. ")") or "")) or ns.Color("red", b.t3 or "unknown"))
+		"Bridge: " .. (b.version and ns.Color("green", "herdr-wow " .. b.version) or ns.Color("red", "not heard from")),
+		"Backend: " .. (b.backend or "unknown") .. " · " .. (b.t3 == "connected" and ns.Color("green", "connected" .. (b.server and (" (" .. b.server .. ")") or "")) or ns.Color("red", b.t3 or "unknown"))
 			.. (b.t3err and ns.Color("grey", " — " .. b.t3err) or ""),
 		(function()
-			if not b.envs then return "Machines: this computer only " .. ns.Color("grey", "(add more with t3code-wow env add <host>)") end
+			if b.backend == "Herdr" then return "Spaces: all spaces in the selected Herdr session" end
+			if not b.envs then return "Machines: this computer only " .. ns.Color("grey", "(add more with herdr-wow env add <host>)") end
 			local parts = {}
 			for _, e in ipairs(b.envs) do
 				local ok = e.state == "connected"
@@ -151,7 +161,7 @@ function S:Refresh()
 		"Speaking with: " .. ({ system = "desktop voice", game = "game voice", off = "nothing (off)" })[ns.SpeechEngine()],
 		"Controller shortcut: " .. (ns.Launcher.chordText and ns.Color("white", "hold " .. ns.Launcher.KeyText("PADLTRIGGER") .. " + " .. ns.Launcher.KeyText("PADRTRIGGER") .. ", press " .. ns.Launcher.KeyText("PADBACK")) or ns.Color("grey", "off (use the minimap button or the game menu)"))
 			.. ns.Color("grey", "  (also in the game menu)"),
-		"Errors: " .. ((ns.db.errors and #ns.db.errors > 0) and ns.Color("red", #ns.db.errors .. " recorded — /t3 errors") or ns.Color("green", "none")),
+		"Errors: " .. ((ns.db.errors and #ns.db.errors > 0) and ns.Color("red", #ns.db.errors .. " recorded — /herdr errors") or ns.Color("green", "none")),
 		"Addon " .. ns.version .. ns.Color("grey", "  ·  session " .. (ns.db.session or "?")),
 	}
 	self.info:SetText(table.concat(lines, "\n"))
@@ -167,20 +177,20 @@ ns:On("Login", function()
 	local panel = CreateFrame("Frame")
 	local title = panel:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
 	title:SetPoint("TOPLEFT", 16, -16)
-	title:SetText("T3 Code")
+	title:SetText(ns.title)
 	local text = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
 	text:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
-	text:SetText("Watch and run your T3 Code agents from inside the game. Type /t3 to open the window.")
+	text:SetText("Browse Herdr spaces and agent tabs from inside the game. Type /herdr to open the window.")
 	local open = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
 	open:SetSize(200, 24)
 	open:SetPoint("TOPLEFT", text, "BOTTOMLEFT", 0, -16)
-	open:SetText("Open T3 Code settings")
+	open:SetText("Open Herdr settings")
 	open:SetScript("OnClick", function()
 		if SettingsPanel and SettingsPanel:IsShown() then HideUIPanel(SettingsPanel) end
 		ns.Main:Open()
 		ns.Main:ShowPage("settings")
 	end)
-	local category = Settings.RegisterCanvasLayoutCategory(panel, "T3 Code")
+	local category = Settings.RegisterCanvasLayoutCategory(panel, ns.title)
 	Settings.RegisterAddOnCategory(category)
 	ns.settingsCategory = category
 end)

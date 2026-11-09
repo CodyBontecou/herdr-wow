@@ -1,0 +1,3 @@
+-- Replaced only by herdr-wow keybinds import --apply; preserved on addon sync.
+local _, ns = ...
+ns.importedBindings = {}
