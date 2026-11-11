@@ -428,6 +428,62 @@ do
 	Stub.bindings["ALT-CTRL-T"] = nil
 end
 
+-- Focused composer dispatches configured navigation without releasing text focus.
+do
+	local oldId = ns.viewId
+	local oldCtrl, oldAlt = IsControlKeyDown, IsAltKeyDown
+	IsControlKeyDown = function() return true end
+	IsAltKeyDown = function() return false end
+	local oldBinding = Stub.bindings["CTRL-TAB"]
+	Stub.bindings["CTRL-TAB"] = "T3CODE_NEXT_THREAD"
+	local box = ns.Main.composer
+	local editBox = box:GetEditBox()
+	local ids = {}
+	ns.ThreadList:Refresh(true)
+	for _, r in ipairs(ns.ThreadList.scrollBox._rows) do
+		if r.ed.thread then table.insert(ids, r.ed.thread.id) end
+	end
+	check(#ids > 1, "focused navigation fixture has multiple threads")
+	ns.Main:SelectThread(ids[#ids])
+	box:SetText("focused navigation draft")
+	box:SetFocus()
+	local onKey = editBox:GetScript("OnKeyDown")
+	if onKey then onKey(editBox, "TAB") end
+	check(ns.viewId == ids[1] and box:HasFocus(), "Ctrl+Tab navigates while composer remains focused")
+	Stub.bindings["CTRL-TAB"] = "T3CODE_PREVIOUS_THREAD"
+	if onKey then onKey(editBox, "TAB") end
+	check(ns.viewId == ids[#ids] and box:GetText() == "focused navigation draft", "focused navigation resolves changed bindings and restores drafts")
+	Stub.bindings["CTRL-TAB"] = "TOGGLEWORLDMAP"
+	if onKey then onKey(editBox, "TAB") end
+	check(ns.viewId == ids[#ids], "focused composer ignores non-Herdr bindings")
+	IsControlKeyDown = function() return false end
+	Stub.bindings["TAB"] = "T3CODE_NEXT_THREAD"
+	if onKey then onKey(editBox, "TAB") end
+	check(ns.viewId == ids[#ids], "unmodified editing keys do not trigger navigation")
+	Stub.bindings["TAB"] = nil
+	IsControlKeyDown = function() return true end
+	IsAltKeyDown = function() return true end
+	local navigateWorkspace = ns.ThreadList.NavigateWorkspace
+	local direction
+	ns.ThreadList.NavigateWorkspace = function(_, value) direction = value end
+	Stub.bindings["ALT-CTRL-J"] = "T3CODE_NEXT_WORKSPACE"
+	if onKey then onKey(editBox, "J") end
+	check(direction == 1 and box:HasFocus(), "Alt+Ctrl workspace shortcut works with composer focus")
+	ns.ThreadList.NavigateWorkspace = navigateWorkspace
+	Stub.bindings["ALT-CTRL-J"] = nil
+	local queued = #ns.Transport.queue
+	Stub.bindings["ALT-CTRL-ENTER"] = "T3CODE_NEXT_THREAD"
+	box._callbacks.OnEnterPressed()
+	check(#ns.Transport.queue == queued, "Enter bound to navigation does not submit the draft")
+	if onKey then onKey(editBox, "ENTER") end
+	check(ns.viewId == ids[1], "modified Enter dispatches navigation once")
+	Stub.bindings["ALT-CTRL-ENTER"] = nil
+	Stub.bindings["CTRL-TAB"] = oldBinding
+	IsControlKeyDown, IsAltKeyDown = oldCtrl, oldAlt
+	box:SetText("")
+	ns.Main:SelectThread(oldId)
+end
+
 -- Thread bindings follow displayed order and wrap, preserving per-thread drafts.
 do
 	local oldId = ns.viewId

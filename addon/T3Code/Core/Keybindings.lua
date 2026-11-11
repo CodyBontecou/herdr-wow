@@ -11,6 +11,34 @@ local ALLOWED = {
 	T3CODE_NEXT_WORKSPACE = true,
 	T3CODE_PREVIOUS_WORKSPACE = true,
 }
+-- Edit boxes consume game bindings. Dispatch only explicit Herdr shortcuts here;
+-- never propagate ordinary typing to movement/action-bar bindings.
+local INPUT_ACTIONS = {
+	T3CODE_NEXT_THREAD = "nextThread",
+	T3CODE_PREVIOUS_THREAD = "previousThread",
+	T3CODE_NEXT_WORKSPACE = "nextWorkspace",
+	T3CODE_PREVIOUS_WORKSPACE = "previousWorkspace",
+	T3CODE_NEW = "new",
+	T3CODE_CLOSE_THREAD = "closeThread",
+	T3CODE_TOGGLE = "toggle",
+	T3CODE_FULLSCREEN = "fullscreen",
+	T3CODE_FOCUS_INPUT = "focusInput",
+}
+function K:InputAction(key)
+	local alt, ctrl, shift = IsAltKeyDown(), IsControlKeyDown(), IsShiftKeyDown()
+	-- Keep bare keys and Shift-only text selection/typing native to the editor.
+	if not alt and not ctrl and not key:match("^F%d+$") then return end
+	local chord = (alt and "ALT-" or "") .. (ctrl and "CTRL-" or "") .. (shift and "SHIFT-" or "") .. key
+	return INPUT_ACTIONS[GetBindingAction(chord)]
+end
+
+function K:AttachInput(box)
+	box:GetEditBox():HookScript("OnKeyDown", ns.Safe(function(_, key)
+		local action = K:InputAction(key)
+		if action then T3Code_Binding(action) end
+	end))
+end
+
 local SPECIAL = {
 	ENTER = true, TAB = true, ESCAPE = true, SPACE = true, BACKSPACE = true,
 	DELETE = true, INSERT = true, HOME = true, END = true, PAGEUP = true,

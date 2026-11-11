@@ -201,6 +201,7 @@ function M:CreateThreadsPage(page)
 	box:SetPoint("BOTTOMRIGHT", -8, 18)
 	box:SetDefaultText("Message the agent  (Shift+Enter for a new line)")
 	box:RegisterCallback("OnEnterPressed", function()
+		if ns.Keybindings:InputAction("ENTER") then return end
 		if IsShiftKeyDown() then
 			box:Insert("\n")
 		else
@@ -208,7 +209,10 @@ function M:CreateThreadsPage(page)
 		end
 	end, M)
 	box:RegisterCallback("OnTextChanged", function() M:UpdateCounter() ns.Interacted() end, M)
-	box:RegisterCallback("OnEscapePressed", function() box:ClearFocus() end, M)
+	box:RegisterCallback("OnEscapePressed", function()
+		if not ns.Keybindings:InputAction("ESCAPE") then box:ClearFocus() end
+	end, M)
+	ns.Keybindings:AttachInput(box)
 	right.Composer = box
 	self.composer = box
 
