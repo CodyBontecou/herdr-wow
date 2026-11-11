@@ -14,6 +14,7 @@ import { SlotBank, ADDON, CTL_LONG } from '../src/slots.js';
 import { StripCapture, MAC_CAPTURE } from '../src/capture.js';
 import { validateHerdrConfig, herdrCommand } from '../src/herdr.js';
 import { decodeImage } from '../src/codec.js';
+import { acquireInstance, installAgent, removeAgent } from '../src/service.js';
 import { importKeybindings } from '../src/keybindings.js';
 import { luaValue } from '../src/luaser.js';
 import { identify, discoverTailscale, mintRemote, revokeRemote, saveToken, readTokenData, tokenFile } from '../src/envs.js';
@@ -131,8 +132,15 @@ async function cmdInstall(args) {
     await herdrCommand(['workspace', 'list'], { session: cfg.herdr?.session || 'default' });
   }
   if (process.platform === 'darwin') {
-    console.log('Building the macOS screen-capture helper…');
-    execFileSync('/usr/bin/xcrun', ['swiftc', '-parse-as-library', '-O', path.join(BRIDGE_ROOT, 'native/mac-capture.swift'), '-o', MAC_CAPTURE], { stdio: 'inherit', timeout: 120000 });
+    const source = path.join(BRIDGE_ROOT, 'native/mac-capture.swift');
+    if (!fs.existsSync(MAC_CAPTURE) || fs.statSync(source).mtimeMs > fs.statSync(MAC_CAPTURE).mtimeMs) {
+      console.log('Building the macOS screen-capture helper…');
+      const temp = `${MAC_CAPTURE}.new`;
+      execFileSync('/usr/bin/xcrun', ['swiftc', '-parse-as-library', '-O', source, '-o', temp], { stdio: 'inherit', timeout: 120000 });
+      execFileSync(temp, ['self-test']);
+      fs.renameSync(temp, MAC_CAPTURE);
+    }
+    execFileSync(MAC_CAPTURE, ['self-test']);
   }
   const wowDir = resolveWowDir(args, cfg);
   const addonsDir = addonsDirOf(wowDir);
@@ -173,8 +181,34 @@ async function cmdInstall(args) {
     console.log(`${C.g('✓')} Herdr ready; browsing all spaces and tabs. New Pi sessions use configured launch projects.`);
   }
 
-  const service = !args['no-service'] && process.platform === 'linux';
-  if (service) {
+  const service = !args['no-service'] && ['linux', 'darwin'].includes(process.platform);
+  if (service && process.platform === 'darwin') {
+    // Migrate only an identifiable foreground bridge, never an arbitrary saved PID.
+    const st = readStatus();
+    if (st?.pid && st.pid !== process.pid) {
+      let command = '';
+      try { command = execFileSync('/bin/ps', ['-p', String(st.pid), '-o', 'command='], { encoding: 'utf8' }).trim(); } catch {}
+      const scripts = [HERDR_BIN_LINK, BIN_LINK, path.join(BRIDGE_ROOT, 'bin/t3code-wow.js')];
+      if (scripts.some((script) => command.endsWith(`${script} run`) || command.endsWith(`${script} run --verbose`))) {
+        process.kill(st.pid, 'SIGTERM');
+        for (let i = 0; i < 50; i++) {
+          try { process.kill(st.pid, 0); } catch { break; }
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+      }
+    }
+    await installAgent({ node: process.execPath, script: path.join(DATA_DIR, 'bridge/bin/t3code-wow.js'), stateDir: STATE_DIR, envPath: process.env.PATH || '' });
+    const since = Date.now();
+    let ready = false;
+    for (let i = 0; i < 50; i++) {
+      const status = readStatus();
+      if (status && Date.parse(status.at) >= since) { ready = true; break; }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (!ready) throw new Error(`LaunchAgent started but has not reported healthy startup. Check ${path.join(STATE_DIR, 'bridge.log')}`);
+    console.log(`${C.g('✓')} Bridge installed as a macOS LaunchAgent (restarts after crashes)`);
+  }
+  if (service && process.platform === 'linux') {
     const node = process.execPath;
     const script = path.join(BRIDGE_ROOT, 'bin', 't3code-wow.js');
     fs.mkdirSync(path.dirname(UNIT_FILE), { recursive: true });
@@ -285,14 +319,33 @@ function cmdSync(args) {
 async function cmdRun(args) {
   const cfg = readConfig();
   const addonsDir = cfg.addonsDir || addonsDirOf(resolveWowDir(args, cfg));
-  const bridge = new Bridge({ addonsDir, config: { ...cfg, verbose: args.verbose || cfg.verbose } });
-  const stop = () => {
+  const release = await acquireInstance(STATE_DIR);
+  let bridge;
+  try {
+    bridge = new Bridge({ addonsDir, config: { ...cfg, verbose: args.verbose || cfg.verbose } });
+  } catch (err) {
+    await release();
+    throw err;
+  }
+  let stopping = false;
+  const stop = async () => {
+    if (stopping) return;
+    stopping = true;
     bridge.stop();
+    await bridge.commandTail;
+    bridge.flushState();
+    await release();
     process.exit(0);
   };
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
-  await bridge.start();
+  try {
+    await bridge.start();
+  } catch (err) {
+    bridge.stop();
+    await release();
+    throw err;
+  }
 }
 
 function ago(ms) {
@@ -313,12 +366,14 @@ function cmdStatus(args) {
   const age = Date.now() - Date.parse(st.at);
   const alive = age < 10000;
   const ok = (b) => (b ? C.g('●') : C.r('●'));
-  console.log(`${ok(alive)} Bridge ${st.version} ${alive ? `running (pid ${st.pid})` : `not running (last seen ${ago(age)})`}`);
+  console.log(`${ok(alive)} Bridge ${st.version} ${alive ? `responding (pid ${st.pid})` : `status stale (last seen ${ago(age)})`}`);
   console.log(`${ok(st.t3.state === 'connected')} ${st.backend || 'T3 Code'}: ${st.t3.state}${st.t3.error ? ` — ${st.t3.error}` : ''} ${C.d(`(${st.t3.threads} threads, ${st.t3.origin || '?'})`)}`);
   console.log(`${ok(!!st.wow)} WoW: ${st.wow ? `running (pid ${st.wow.pid})` : 'not running'}`);
   console.log(`${ok(st.capture.state === 'ok' || st.capture.state === 'idle')} Screen link: ${st.capture.state} via ${st.capture.backend} ${C.d(`(${st.capture.decoded} frames read, ${st.capture.rejected} rejected)`)}${st.capture.lastError ? `\n    ${C.y(st.capture.lastError)}` : ''}`);
+  if (st.capture.lastCaptureAt) console.log(`  Last successful capture: ${ago(Date.now() - st.capture.lastCaptureAt)}`);
+  if (st.link) console.log(`${ok(alive && ['idle', 'updating'].includes(st.link.state))} Addon round trip: ${st.link.state}${st.link.lastAckAt ? `; last acknowledged update ${ago(Date.now() - st.link.lastAckAt)}` : '; no update acknowledged yet'}${['idle', 'idle-unverified'].includes(st.link.state) ? ' (not a continuous liveness check)' : ''}`);
   if (st.addon) {
-    console.log(`${ok(true)} Addon ${st.addon.version}: last heard ${ago(Date.now() - st.addon.lastSeen)}; window ${st.addon.flags.includes('o') ? 'open' : 'closed'}`);
+    console.log(`${ok(alive && !['capture-error', 'capture-stalled', 'awaiting-ack'].includes(st.link?.state))} Addon ${st.addon.version}: last heard ${ago(Date.now() - st.addon.lastSeen)}; window ${st.addon.flags.includes('o') ? 'open' : 'closed'}`);
     console.log(`${ok(st.addon.encrypted)} Link ${st.addon.encrypted ? 'encrypted' : 'not encrypted yet (waiting for the addon to load its keys)'}${st.rejected?.forged ? C.d(` · ${st.rejected.forged} unauthenticated frames ignored`) : ''}`);
   } else {
     console.log(`${ok(false)} Addon: not heard from yet ${C.d('(log in, then /herdr)')}`);
@@ -375,6 +430,7 @@ async function cmdUninstall(args) {
   const done = (msg) => console.log(`${C.g('✓')} ${msg}`);
   const warn = (msg) => console.log(`${C.y('!')} ${msg}`);
 
+  if (process.platform === 'darwin') removeAgent();
   if (fs.existsSync(UNIT_FILE)) {
     spawnSync('systemctl', ['--user', 'disable', '--now', UNIT_NAME], { stdio: 'ignore' });
     fs.rmSync(UNIT_FILE);

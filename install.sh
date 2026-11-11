@@ -51,12 +51,33 @@ if [[ -z $src ]]; then
 fi
 
 mkdir -p "$dest" "$bin"
-rm -rf "$dest/bridge.new" "$dest/addon.new"
-cp -r "$src/bridge" "$dest/bridge.new"
-cp -r "$src/addon" "$dest/addon.new"
-rm -rf "$dest/bridge" "$dest/addon"
-mv "$dest/bridge.new" "$dest/bridge"
-mv "$dest/addon.new" "$dest/addon"
+if ! mkdir "$dest/install.lock" 2>/dev/null; then
+  echo "Another install is active. If it crashed, remove $dest/install.lock and retry." >&2
+  exit 1
+fi
+trap 'rmdir "$dest/install.lock"; if [[ -n ${tmp:-} ]]; then rm -rf "$tmp"; fi' EXIT
+mkdir -p "$dest/releases"
+release="$(mktemp -d "$dest/releases/release.XXXXXX")"
+cp -r "$src/bridge" "$release/bridge"
+cp -r "$src/addon" "$release/addon"
+# Never remove the working helper while compiling its replacement.
+if [[ $(uname -s) == Darwin ]]; then
+  echo "Building and checking the macOS screen-capture helper…"
+  /usr/bin/xcrun swiftc -parse-as-library -O "$release/bridge/native/mac-capture.swift" -o "$release/bridge/bin/mac-capture"
+  "$release/bridge/bin/mac-capture" self-test
+fi
+node --check "$release/bridge/bin/t3code-wow.js"
+node "$release/bridge/bin/t3code-wow.js" --help >/dev/null
+# Node resolves these links to a release-specific path. Existing processes keep
+# their complete release (including the helper); future processes use the new one.
+for name in bridge addon; do
+  if [[ -d "$dest/$name" && ! -L "$dest/$name" ]]; then
+    mv "$dest/$name" "$dest/$name.legacy.$(date +%s)"
+  fi
+  ln -s "$release/$name" "$dest/$name.next"
+  node -e 'require("fs").renameSync(process.argv[1], process.argv[2])' "$dest/$name.next" "$dest/$name"
+done
+# Old releases are deliberately retained until no old bridge can be using them.
 chmod +x "$dest/bridge/bin/t3code-wow.js"
 ln -sf "$dest/bridge/bin/t3code-wow.js" "$bin/herdr-wow"
 ln -sf "$dest/bridge/bin/t3code-wow.js" "$bin/t3code-wow"

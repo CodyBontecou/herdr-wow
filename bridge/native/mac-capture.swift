@@ -10,6 +10,10 @@ import ScreenCaptureKit
       let app = NSApplication.shared
       app.setActivationPolicy(.prohibited)
       let args = CommandLine.arguments
+      if args.count == 2 && args[1] == "self-test" {
+        print("mac-capture ready")
+        return
+      }
       if args.count == 2 && args[1] == "permission" {
         guard CGRequestScreenCaptureAccess() else { throw CaptureError.message("Screen Recording access was not granted. Enable it in System Settings > Privacy & Security, then restart the bridge.") }
         return

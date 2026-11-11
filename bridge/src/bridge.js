@@ -257,12 +257,15 @@ export class Bridge {
 
   saveState() {
     clearTimeout(this.saveTimer);
-    this.saveTimer = setTimeout(() => {
-      fs.mkdirSync(this.stateDir, { recursive: true });
-      const tmp = this.stateFile + '.tmp';
-      fs.writeFileSync(tmp, JSON.stringify(this.persist));
-      fs.renameSync(tmp, this.stateFile);
-    }, 250);
+    this.saveTimer = setTimeout(() => this.flushState(), 250);
+  }
+
+  flushState() {
+    clearTimeout(this.saveTimer);
+    fs.mkdirSync(this.stateDir, { recursive: true });
+    const tmp = this.stateFile + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(this.persist));
+    fs.renameSync(tmp, this.stateFile);
   }
 
   // ---------------------------------------------------------------------------
@@ -312,6 +315,7 @@ export class Bridge {
     const key = processKey(proc);
     const was = this.proc;
     this.proc = proc;
+    this.capture.resetProcess(key);
     if (key && key !== this.persist.processKey) {
       // A new client process: its sound cache is empty, so every signal file is
       // reusable. Reset them and start counting again.
@@ -347,11 +351,12 @@ export class Bridge {
           delay = 150;
         } else {
           this.captureState = res.status === 'empty' ? (this.client ? 'idle' : 'waiting') : res.status;
-          if (res.status === 'error' && this.capture.stats.captures % 50 === 1) this.log(`capture: ${res.error}`);
+          if (res.status === 'error' && (this.capture.failures === 1 || this.capture.failures % 30 === 0)) this.log(`capture (${res.kind}): ${res.error}`);
           if (res.status === 'hidden' || res.status === 'no-window') delay = 1000;
           if (Date.now() - this.capture.lastSeenAt < 4000) delay = 150;
           else if (this.client?.flags.includes('o') && res.status === 'empty') delay = 200;
           else if (this.client && res.status === 'empty') delay = 700; // window closed: nothing urgent
+          if (res.status === 'error') delay = this.capture.retryDelay();
         }
       }
       await new Promise((r) => setTimeout(r, delay));
@@ -391,6 +396,12 @@ export class Bridge {
       if (hello.sig > this.persist.sigCounter) this.persist.sigCounter = hello.sig;
     }
     c.encrypted = sealed;
+    if (hello.gen > (c.appliedGen || 0)) {
+      c.lastAckAt = Date.now();
+      this.unackedSince = Date.now(); // observed return-channel progress
+    }
+    c.appliedGen = hello.gen;
+    if (hello.gen >= this.lastGen) this.unackedSince = null;
     if (c.flags !== hello.flags) {
       const wasQuiet = c.flags.includes('q');
       c.flags = hello.flags;
@@ -423,7 +434,9 @@ export class Bridge {
     const fresh = (sealed ? commands : []).filter((cmd) => cmd.id > handled).sort((a, b) => a.id - b.id);
     if (fresh.length) {
       this.persist.handled[c.session] = fresh.at(-1).id;
-      this.saveState();
+      // Persist the replay barrier before any external side effect. An uncertain
+      // command is never automatically retried after a bridge crash.
+      this.flushState();
       // Preserve new/send ordering even when starting an agent takes seconds.
       for (const cmd of fresh) this.commandTail = this.commandTail.then(() => this.runCommand(cmd)).catch((err) => this.log(`command failed: ${err.message}`));
     }
@@ -1003,6 +1016,7 @@ export class Bridge {
     }
     for (const r of this.results) r.sent = true;
     this.lastGen = gen;
+    if (!this.unackedSince) this.unackedSince = Date.now();
     this.persist.gen = gen;
     this.lastDigest = digest;
     this.lastPublishAt = Date.now();
@@ -1013,6 +1027,25 @@ export class Bridge {
     return true;
   }
 
+  linkHealth(now = Date.now()) {
+    if (!this.proc) return { state: 'no-client' };
+    if (this.capture.lastError) return { state: 'capture-error' };
+    if (!this.capture.lastCaptureAt || now - this.capture.lastCaptureAt > 15000) return { state: 'capture-stalled' };
+    if (!this.client) return { state: 'waiting-for-addon' };
+    const pending = this.lastGen > (this.client.appliedGen || 0);
+    return {
+      // The addon hides its strip immediately on acknowledgement; it does not
+      // emit an acknowledgement-of-acknowledgement. Quiet pixels are therefore
+      // unverified idle, not evidence of a broken return channel.
+      state: !pending ? 'idle'
+        : now - this.client.lastSeen > 4000 ? 'idle-unverified'
+        : now - (this.unackedSince || this.lastPublishAt) > 15000 ? 'awaiting-ack' : 'updating',
+      lastAckAt: this.client.lastAckAt || null,
+      appliedGen: this.client.appliedGen || 0,
+      publishedGen: this.lastGen,
+    };
+  }
+
   writeStatus() {
     const status = {
       version: VERSION,
@@ -1021,7 +1054,8 @@ export class Bridge {
       backend: this.t3.label || 'T3 Code',
       t3: { state: this.t3.state, error: this.t3.error, threads: this.t3.threads.size, origin: this.t3.origin, environments: this.t3.environments() },
       wow: this.proc ? { pid: this.proc.pid } : null,
-      capture: { state: this.captureState, backend: this.capture.resolveBackend(), ...this.capture.stats, lastError: this.capture.lastError },
+      capture: { state: this.captureState, backend: this.capture.resolveBackend(), ...this.capture.stats, lastError: this.capture.lastError, errorKind: this.capture.errorKind, failures: this.capture.failures, lastCaptureAt: this.capture.lastCaptureAt, lastFrameAt: this.capture.lastSeenAt, retryInMs: this.capture.retryDelay() },
+      link: this.linkHealth(),
       addon: this.client
         ? { ui: this.client.ui, version: this.client.version, flags: this.client.flags, view: this.client.view, slotNext: this.client.slotNext, lastSeen: this.client.lastSeen, encrypted: !!this.client.encrypted }
         : null,

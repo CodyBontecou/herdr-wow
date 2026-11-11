@@ -385,6 +385,34 @@ test('reopening a settled thread sends the reason T3 Code requires', async () =>
   assert.equal(sent[0][1].reason, 'user');
 });
 
+test('capture recovery and bridge restart do not replay commands or reset bell/slot counters', async () => {
+  const { b, dir, calls } = fakeBridge();
+  b.persist.sigCounter = 12;
+  const records = [['H', 1, 'sess', 'ui1', 5, 12, 0, 'o', '', '0.1.0'], ['C', 7, 'send', 't1', 'once']];
+  const request = frame(8, records);
+  b.onFrame(request);
+  // The replay barrier must already be on disk before the queued side effect.
+  assert.equal(JSON.parse(fs.readFileSync(b.stateFile)).handled.sess, 7);
+  await b.commandTail;
+  b.capture.resetProcess('recovered');
+  b.onFrame(request);
+  await b.commandTail;
+  assert.equal(calls.length, 1);
+  b.flushState();
+  const restarted = new Bridge({ addonsDir: dir, config: { slots: 8 }, stateDir: b.stateDir, log: () => {} });
+  let replayed = 0;
+  restarted.runCommand = async () => replayed++;
+  restarted.onFrame(request);
+  await restarted.commandTail;
+  assert.equal(replayed, 0);
+  assert.equal(restarted.persist.sigCounter, 12);
+  assert.equal(restarted.persist.slotGuess, 5);
+  b.stop();
+  restarted.stop();
+  clearTimeout(b.saveTimer);
+  clearTimeout(restarted.saveTimer);
+});
+
 test('schema errors from T3 Code read as a version mismatch', () => {
   assert.match(friendlyError('Missing key\n  at ["reason"]'), /didn't accept that request \(it wants "reason"\)/);
   assert.equal(friendlyError('nothing is running in that thread'), 'nothing is running in that thread');

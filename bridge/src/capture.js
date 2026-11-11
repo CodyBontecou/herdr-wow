@@ -11,6 +11,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const MAC_CAPTURE = fileURLToPath(new URL('../bin/mac-capture', import.meta.url));
+
+export function captureError(err) {
+  const text = String(err.message || err);
+  if (err.code === 'ENOENT' || /helper missing/i.test(text)) return { kind: 'missing-helper', message: 'Capture helper missing. Rerun ./install.sh.' };
+  if (/Screen Recording|permission|not authorized/i.test(text)) return { kind: 'permission-denied', message: 'Screen Recording access required. Enable the bridge/helper in System Settings > Privacy & Security > Screen Recording.' };
+  if (err.killed || err.code === 'ETIMEDOUT' || /timed? ?out/i.test(text)) return { kind: 'timeout', message: 'Screen capture timed out; retrying automatically.' };
+  return { kind: 'capture-failed', message: text };
+}
 import { decodeImage, parsePPM, CELLS_PER_ROW, MAX_ROWS } from './codec.js';
 
 // A service may start before the session exports WAYLAND_DISPLAY; find the socket.
@@ -115,20 +123,26 @@ async function hyprWindow(pid) {
 // ---------------------------------------------------------------------------
 
 export class StripCapture {
-  constructor({ log = () => {}, backend = 'auto', region = null } = {}) {
+  constructor({ log = () => {}, backend = 'auto', region = null, macCapture = MAC_CAPTURE, captureTimeout = 8000 } = {}) {
     this.log = log;
     this.backend = backend;
+    this.macCapture = macCapture;
+    this.captureTimeout = captureTimeout;
     this.manualRegion = region; // { x, y, width, height } in compositor (logical) coordinates
     this.hint = null;
     this.lastError = null;
     this.lastSeenAt = 0;
+    this.lastCaptureAt = 0;
+    this.errorKind = null;
+    this.failures = 0;
+    this.processIdentity = null;
     this.stats = { captures: 0, decoded: 0, rejected: 0, notVisible: 0 };
     this.lastImage = null;
   }
 
   resolveBackend() {
     if (this.backend !== 'auto') return this.backend;
-    if (process.platform === 'darwin') return fs.existsSync(MAC_CAPTURE) ? 'macos' : 'none';
+    if (process.platform === 'darwin') return fs.existsSync(this.macCapture) ? 'macos' : 'none';
     if (process.env.WAYLAND_DISPLAY || hyprSocket()) {
       if (hyprSocket() && which('grim')) return 'hyprland';
       if (which('grim')) return 'grim';
@@ -151,7 +165,7 @@ export class StripCapture {
     if (backend === 'macos') {
       if (!wowPid) return { status: 'no-window' };
       try {
-        const buf = await run(MAC_CAPTURE, ['strip', String(wowPid)], { timeout: 8000 });
+        const buf = await run(this.macCapture, ['strip', String(wowPid)], { timeout: this.captureTimeout });
         return { status: 'ok', image: parsePPM(buf) };
       } catch (err) {
         if (err.message === 'no-window') return { status: 'no-window' };
@@ -197,7 +211,7 @@ export class StripCapture {
     const name = `wow-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.jpg`;
     if (backend === 'macos') {
       if (!wowPid) throw new Error('WoW is not running');
-      const data = await run(MAC_CAPTURE, ['screenshot', String(wowPid)], { timeout: 8000 });
+      const data = await run(this.macCapture, ['screenshot', String(wowPid)], { timeout: this.captureTimeout });
       return { data, name, mime: 'image/jpeg' };
     }
     if (backend === 'hyprland' || backend === 'grim') {
@@ -216,16 +230,40 @@ export class StripCapture {
     throw new Error('no screenshot backend (install grim)');
   }
 
-  // One capture + decode. Returns { status, frame? }.
+  resetProcess(identity) {
+    if (identity === this.processIdentity) return;
+    this.processIdentity = identity;
+    this.hint = null;
+    this.lastImage = null;
+    this.lastSeenAt = 0;
+    this.lastCaptureAt = 0;
+    this.lastError = null;
+    this.errorKind = null;
+    this.failures = 0;
+  }
+
+  retryDelay() {
+    return this.failures ? Math.min(10000, 400 * 2 ** Math.min(this.failures - 1, 5)) : 0;
+  }
+
+  // One bounded capture attempt; the bridge schedules retries without blocking commands.
   async poll(wowPid) {
     let res;
     try {
       res = await this.grab(wowPid);
     } catch (err) {
-      this.lastError = err.message;
-      return { status: 'error', error: err.message };
+      const error = captureError(err);
+      this.lastError = error.message;
+      this.errorKind = error.kind;
+      this.failures++;
+      this.hint = null;
+      return { status: 'error', error: error.message, kind: error.kind };
     }
+    this.lastError = null;
+    this.errorKind = null;
+    this.failures = 0;
     if (res.status !== 'ok') return res;
+    this.lastCaptureAt = Date.now();
     this.lastImage = res.image;
     const out = decodeImage(res.image, this.hint);
     if (!out) return { status: 'empty' };

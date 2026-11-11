@@ -78,11 +78,10 @@ T3 Code is **not required** for Herdr. To use the optional original backend inst
 ```bash
 git clone https://github.com/CodyBontecou/herdr-wow.git
 cd herdr-wow
-./install.sh --backend herdr --no-service
-~/.local/bin/herdr-wow run
+./install.sh --backend herdr
 ```
 
-Leave the bridge terminal running. The macOS installer compiles its capture helper; Linux can optionally use the existing user service instead of `--no-service`.
+The installer starts a supervised bridge: a LaunchAgent on macOS, or a systemd user service on Linux. For a foreground bridge instead, install with `--no-service`, then run `herdr-wow run` and leave that terminal open. On macOS, grant Screen Recording access to the installed helper; terminal permission may not apply to a LaunchAgent. See [capture recovery](docs/HERDR.md#capture-recovery-and-supervision).
 
 On the first installation, **quit and restart WoW completely**, then log in. New slot addons and sounds are indexed at launch. Later code updates usually need `/reload` after rerunning `./install.sh` from the checkout. A nonstandard installation can be selected with `--wow "/path/to/World of Warcraft/_forever_"`.
 

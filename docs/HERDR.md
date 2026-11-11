@@ -6,7 +6,7 @@ The addon lists every space and tab in the selected Herdr session, including exi
 
 ## Setup from a checkout
 
-Requirements: Node >=22 and Herdr with `api snapshot`, pane reads and agent controls (tested with 0.8.0). Pi must be installed on the host's PATH to start new Pi sessions, but is not required just to browse existing tabs. On macOS, the capture helper needs macOS 14 or later and Xcode command-line tools (`xcode-select --install`). The bridge currently runs in a terminal on macOS, not a LaunchAgent.
+Requirements: Node >=22 and Herdr with `api snapshot`, pane reads and agent controls (tested with 0.8.0). Pi must be installed on the host's PATH to start new Pi sessions, but is not required just to browse existing tabs. On macOS, the capture helper needs macOS 14 or later and Xcode command-line tools (`xcode-select --install`). The installer starts a supervised macOS LaunchAgent by default; `--no-service` retains foreground operation.
 
 1. Start Herdr. All its spaces and tabs in the selected session are discoverable without configuring project directories.
 2. **Optional, for new Pi launches:** choose an existing workspace and run `herdr workspace list` inside Herdr to get its ID. Allowlist a launch directory using the checkout's CLI. Substitute your directory and actual workspace ID (not its sidebar number):
@@ -22,16 +22,12 @@ Requirements: Node >=22 and Herdr with `api snapshot`, pane reads and agent cont
 3. Install from this checkout:
 
    ```bash
-   ./install.sh --backend herdr --no-service
+   ./install.sh --backend herdr
    ```
 
    Use `--wow "/path/to/World of Warcraft/_forever_"` for a nonstandard game location. Native macOS installations in the standard Applications directories are also discovered. This still targets Forever, not Retail or Classic.
 4. Fully quit and restart WoW the first time so it indexes the new slot addons and sounds. Later code-only updates usually need `/reload`; new folders need another full restart.
-5. Start the installed bridge in a terminal and leave it running:
-
-   ```bash
-   ~/.local/bin/herdr-wow run
-   ```
+5. Check `herdr-wow status --log`. The installer starts the bridge automatically. If you chose `--no-service`, start `~/.local/bin/herdr-wow run` in a terminal and leave it running.
 
 6. Log in to a character and open `/herdr` (`/t3` remains a compatibility alias). **All spaces** shows every tab; the dropdown filters by space, including empty spaces. Select a tab to read its output. To start Pi, choose **New Thread**, select an allowlisted launch project, enter a task, and press **Start**. Pi uses your normal settings. If first-run/trust/setup prompts block startup, inspect the retained Herdr tab on the desktop.
 
@@ -55,7 +51,7 @@ This reads Pi's saved JSONL, not its live renderer: streaming messages appear af
 
 ## Import terminal shortcuts
 
-Install this checkout first (`./install.sh --backend herdr --no-service` on macOS). Preview your Herdr shortcuts from the terminal:
+Install this checkout first (`./install.sh --backend herdr`). Preview your Herdr shortcuts from the terminal:
 
 ```bash
 herdr-wow keybinds import
@@ -83,6 +79,20 @@ These addon controls require `/reload` after installing the update. They apply t
 The UI title, tracker, notifications, minimap art, game-menu entry, keybinding labels and Options category are Herdr. Use `/herdr` in game and `herdr-wow` on the desktop. Legacy `/t3`, `/t3code` and `t3code-wow` commands remain aliases. Existing saved settings and assigned keybindings are retained.
 
 The installed `T3Code` folder/global, `T3CodeDB`, binding IDs, slot addon names and manifest bytes, service name and config/state/data directories intentionally retain their legacy names. This is a display/command rebrand, not a transport or data migration. New icon textures reuse the existing filenames; `/reload` loads the new code, but cached textures may need a full game restart. Artwork source and licensing are included in `addon/T3Code/Media/ATTRIBUTION.md`.
+
+## Capture recovery and supervision
+
+Updates are staged in immutable release directories under the existing data directory. The macOS helper is built and self-tested before the installed links switch. Running bridges retain their old release files; old releases are not automatically pruned. The first upgrade from the old directory layout keeps `.legacy.*` backups. A crashed installer may leave `install.lock`; confirm no installer is running before removing that directory and retrying.
+
+Capture failures retry with exponential backoff from 400 ms to 10 seconds. Successful capture clears resolved errors, even when no strip is visible. Missing helper, permission denial, timeout and other capture errors are reported separately. A changed game process identity clears cached geometry. No-strip and hidden-window states are normal and do not trigger bridge restarts.
+
+`herdr-wow status --log` separates status freshness, last successful capture, decoded frames and acknowledged snapshot generations. `awaiting-ack` means a strip is still being received while an update remains unacknowledged for over 15 seconds; `capture-stalled` means no successful capture for over 15 seconds. The addon hides its strip immediately when acknowledged, without sending an acknowledgement-of-acknowledgement. Quiet pixels with an unconfirmed snapshot therefore report `idle-unverified`, not a link failure. Neither idle state proves continuous addon liveness. Capture success alone does not verify the return channel.
+
+On macOS, the LaunchAgent `io.herdr.wow.bridge` starts at login and restarts after crashes with a 10-second throttle. Logs are in the state directory's `bridge.log`. To restart it, use `launchctl kickstart -k gui/$(id -u)/io.herdr.wow.bridge`. To stop it for foreground debugging, use `launchctl bootout gui/$(id -u)/io.herdr.wow.bridge`, then `herdr-wow run`. Rerunning the installer without `--no-service` restores supervision; uninstall removes the agent. `--no-service` does not stop an already installed service. Shell path overrides are retained, but shell credentials are not copied into the plist.
+
+A loopback-only, OS-owned listener prevents simultaneous bridges for the same canonical state directory and user. It carries no API or transport data and is released on crashes. Its deterministic port can conflict with another local program; the error reports the port instead of starting a second bridge. This is bridge supervision, not a new game/addon channel.
+
+Authenticated command IDs are persisted before external side effects so a replay after recovery does not resubmit an uncertain operation. This is at-most-once dispatch, not exactly-once delivery: a crash between recording an ID and completing its operation may leave it unexecuted or uncertain. Check the desktop before manually resubmitting. Capture recovery never resets bell/slot counters; only the existing game-process/session rules advance or reset them.
 
 ## macOS capture permissions
 
